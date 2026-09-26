@@ -51,7 +51,7 @@ type ProfitLoss struct {
 // 전체 원문도 보존하여 아직 스키마가 명시되지 않은 자산 정보를 잃지 않습니다.
 type HoldingsResponse struct {
 	DailyProfitLoss ProfitLoss      `json:"dailyProfitLoss"`
-	Raw            json.RawMessage `json:"-"`
+	Raw             json.RawMessage `json:"-"`
 }
 
 type RateLimit struct {
@@ -141,11 +141,13 @@ func (c *Client) Token(ctx context.Context) (string, error) {
 	}
 	form := url.Values{
 		"grant_type": {"client_credentials"},
-		"client_id": {c.clientID}, "client_secret": {c.clientSecret},
+		"client_id":  {c.clientID}, "client_secret": {c.clientSecret},
 	}
-	// 요청 시작 시점 기준으로 만료를 계산해 전송 지연을 보수적으로 반영합니다.
-	started := c.now()
+	// 재시도로 지연될 수 있으므로, 만료 기준 시각은 매 시도 직전(대기 이후)에 다시 기록합니다.
+	// 그렇지 않으면 백오프가 길어질 때 방금 받은 유효한 토큰을 이미 만료됐다고 오판합니다.
+	var started time.Time
 	body, err := c.request(ctx, "AUTH", func() (*http.Request, error) {
+		started = c.now()
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/oauth2/token", strings.NewReader(form.Encode()))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -228,7 +230,7 @@ func unwrapData(body []byte) []byte {
 }
 
 func (c *Client) get(ctx context.Context, group, path, account string) ([]byte, error) {
-	return c.request(ctx, group, func() (*http.Request, error) {
+	build := func() (*http.Request, error) {
 		token, err := c.Token(ctx)
 		if err != nil {
 			return nil, err
@@ -241,7 +243,33 @@ func (c *Client) get(ctx context.Context, group, path, account string) ([]byte, 
 			}
 		}
 		return req, err
-	})
+	}
+	body, err := c.request(ctx, group, build)
+	// 캐시된 토큰을 쓰기 직전에 다른 goroutine이 새 토큰을 발급하면(7.1: 재발급 시
+	// 이전 토큰 즉시 무효화) 이 요청은 이미 무효화된 토큰으로 401을 받습니다.
+	// 토큰 캐시를 비우고 한 번만 새로 발급받아 재시도합니다.
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusUnauthorized {
+		if invalidateErr := c.invalidateToken(ctx); invalidateErr != nil {
+			return nil, invalidateErr
+		}
+		body, err = c.request(ctx, group, build)
+	}
+	return body, err
+}
+
+// invalidateToken은 캐시된 토큰을 게이트 아래에서 비워, 다음 Token 호출이
+// 새로 발급받도록 강제합니다.
+func (c *Client) invalidateToken(ctx context.Context) error {
+	select {
+	case c.tokenGate <- struct{}{}:
+		defer func() { <-c.tokenGate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	c.token = ""
+	c.expires = time.Time{}
+	return nil
 }
 
 // RateLimit은 그룹별 마지막 응답 헤더와 현재 대기 기한의 복사본입니다.
@@ -314,7 +342,7 @@ func (c *Client) observe(group string, resp *http.Response) bool {
 	now := c.now()
 	retryAfterValid := false
 	limit := RateLimit{
-		Limit: nonnegative(resp.Header.Get("X-RateLimit-Limit")),
+		Limit:     nonnegative(resp.Header.Get("X-RateLimit-Limit")),
 		Remaining: nonnegative(resp.Header.Get("X-RateLimit-Remaining")),
 	}
 	// X-RateLimit-Reset은 Unix epoch 초로 해석합니다.

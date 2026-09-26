@@ -51,8 +51,8 @@ type SecretManagerProvider struct {
 
 func NewSecretManagerProvider(client *http.Client) *SecretManagerProvider {
 	return &SecretManagerProvider{
-		http: safeHTTPClient(client),
-		endpoint: "https://secretmanager.googleapis.com/v1/",
+		http:        safeHTTPClient(client),
+		endpoint:    "https://secretmanager.googleapis.com/v1/",
 		metadataURL: "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
 	}
 }

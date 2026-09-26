@@ -19,7 +19,7 @@ func testClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Cleanup(server.Close)
 	client, err := New(context.Background(), Config{
 		BaseURL: server.URL, HTTPClient: server.Client(),
-		Secrets: NewMemorySecretProvider(map[string]string{"id": "test-id", "secret": "test-secret"}),
+		Secrets:        NewMemorySecretProvider(map[string]string{"id": "test-id", "secret": "test-secret"}),
 		ClientIDSecret: "id", ClientSecretSecret: "secret",
 	})
 	if err != nil {
@@ -255,6 +255,99 @@ func TestInvalidResponses(t *testing.T) {
 				t.Fatal("불완전한 일간손익을 허용했습니다")
 			}
 		})
+	}
+}
+
+func TestTokenExpiryTimingAfterAuthBackoff(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	var calls atomic.Int32
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth2/token" {
+			t.Fatalf("예상하지 않은 경로: %s", r.URL.Path)
+		}
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "10")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		fmt.Fprint(w, `{"access_token":"fresh-token","token_type":"Bearer","expires_in":5}`)
+	})
+	client.now = func() time.Time { return now }
+	client.sleep = func(ctx context.Context, d time.Duration) error {
+		now = now.Add(d)
+		return nil
+	}
+	// 첫 시도는 429(Retry-After 10s)로 지연되고, 두 번째 시도에서 만료까지 5초짜리
+	// 토큰을 받습니다. 만료 기준 시각을 재시도 이전 시점으로 고정하면 이 토큰은
+	// 도착 즉시 "이미 만료"로 오판됩니다.
+	token, err := client.Token(context.Background())
+	if err != nil {
+		t.Fatalf("백오프 이후 발급된 유효한 토큰을 거부했습니다: %v", err)
+	}
+	if token != "fresh-token" {
+		t.Fatalf("토큰: %q", token)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("호출 횟수: %d", calls.Load())
+	}
+}
+
+func TestUnauthorizedRetriesOnceWithFreshToken(t *testing.T) {
+	var tokenCalls, holdingsCalls atomic.Int32
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			n := tokenCalls.Add(1)
+			fmt.Fprintf(w, `{"access_token":"token-%d","token_type":"Bearer","expires_in":100}`, n)
+			return
+		}
+		if r.URL.Path == "/api/v1/holdings" {
+			n := holdingsCalls.Add(1)
+			if n == 1 {
+				// 다른 goroutine이 방금 재발급받아 이 토큰을 무효화했다고 가정합니다.
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			if r.Header.Get("Authorization") != "Bearer token-2" {
+				t.Errorf("재시도에 새 토큰이 쓰이지 않았습니다: %s", r.Header.Get("Authorization"))
+			}
+			fmt.Fprint(w, `{"dailyProfitLoss":{"amount":1,"rate":1}}`)
+			return
+		}
+		t.Fatalf("예상하지 않은 경로: %s", r.URL.Path)
+	})
+	holdings, err := client.Holdings(context.Background(), "acc-1")
+	if err != nil {
+		t.Fatalf("401 이후 자동 재시도가 실패했습니다: %v", err)
+	}
+	if holdings.DailyProfitLoss.Amount.String() != "1" {
+		t.Fatalf("holdings: %+v", holdings)
+	}
+	if tokenCalls.Load() != 2 || holdingsCalls.Load() != 2 {
+		t.Fatalf("호출 횟수: token=%d holdings=%d", tokenCalls.Load(), holdingsCalls.Load())
+	}
+}
+
+func TestUnauthorizedRetryIsBoundedToOnce(t *testing.T) {
+	var holdingsCalls atomic.Int32
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			writeToken(w)
+			return
+		}
+		if r.URL.Path == "/api/v1/holdings" {
+			holdingsCalls.Add(1)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		t.Fatalf("예상하지 않은 경로: %s", r.URL.Path)
+	})
+	_, err := client.Holdings(context.Background(), "acc-1")
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("401 오류: %v", err)
+	}
+	if holdingsCalls.Load() != 2 {
+		t.Fatalf("재시도 횟수가 1회를 초과했습니다(원본+재시도 1회여야 함): %d", holdingsCalls.Load())
 	}
 }
 
