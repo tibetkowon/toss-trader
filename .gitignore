@@ -12,10 +12,23 @@
 *.key
 secrets.json
 
+# Infra identifiers (GCP project ID, bucket slug, static IP, account IDs)
+# - repo is public, so real deployment values must stay local-only
+*.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
+config.local.*
+config.local.yaml
+
 # SQLite DB files (local/dev data, not source)
 *.db
 *.sqlite
 *.sqlite3
+
+# Runtime state / snapshots (contain real balance & trade data)
+snapshots/
+*.snapshot.json
 
 # Logs
 *.log
