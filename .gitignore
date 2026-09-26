@@ -1,0 +1,26 @@
+# Go
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Env / secrets - never commit credentials
+.env
+.env.*
+*.pem
+*.key
+secrets.json
+
+# SQLite DB files (local/dev data, not source)
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
