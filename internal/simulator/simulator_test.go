@@ -245,6 +245,40 @@ func TestDailyPnLReflectsUnrealized(t *testing.T) {
 	}
 }
 
+func TestStateRoundTrip(t *testing.T) {
+	cfg := testConfig()
+	sim := New(cfg, 100000)
+	a := Setup{Symbol: "A", TargetPrice: 1000, TrendOK: true}
+	b := Setup{Symbol: "B", TargetPrice: 1000, TrendOK: true}
+	sim.OnTick(a, 1000, false)
+	sim.OnTick(a, 980, false) // stop-loss -> A banned for re-entry, consecutiveLosses=1
+	sim.OnTick(b, 1000, false)
+
+	state := sim.State()
+	restored := Restore(cfg, state)
+
+	pos, ok := restored.Position()
+	wantPos, wantOK := sim.Position()
+	if ok != wantOK || pos != wantPos {
+		t.Fatalf("포지션 복구 불일치: got %+v ok=%v want %+v ok=%v", pos, ok, wantPos, wantOK)
+	}
+	if !approxEqual(restored.Cash(), sim.Cash()) {
+		t.Fatalf("현금 복구 불일치: got %v want %v", restored.Cash(), sim.Cash())
+	}
+	if !approxEqual(restored.RealizedPnLToday(), sim.RealizedPnLToday()) {
+		t.Fatalf("실현손익 복구 불일치: got %v want %v", restored.RealizedPnLToday(), sim.RealizedPnLToday())
+	}
+	if restored.ConsecutiveLosses() != sim.ConsecutiveLosses() {
+		t.Fatalf("연속손실 복구 불일치: got %d want %d", restored.ConsecutiveLosses(), sim.ConsecutiveLosses())
+	}
+
+	// 복구 후에도 A는 여전히 당일 재진입 금지여야 합니다.
+	action := restored.OnTick(a, 1500, false)
+	if action.Type != NoAction {
+		t.Fatalf("복구 후 재진입 금지가 유지되지 않았습니다: %+v", action)
+	}
+}
+
 func TestActionTypeString(t *testing.T) {
 	cases := map[ActionType]string{
 		NoAction:          "NoAction",

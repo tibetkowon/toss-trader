@@ -76,10 +76,10 @@ type Position struct {
 	Symbol     string
 	Shares     int
 	EntryPrice float64
-	// costBasis is notional + buy-side commission actually paid — used as
+	// CostBasis is notional + buy-side commission actually paid — used as
 	// the P&L baseline at close so buy-side commission isn't silently
 	// dropped from realized P&L (and therefore from the daily loss limit).
-	costBasis float64
+	CostBasis float64
 }
 
 // Simulator tracks one trading day's virtual portfolio for a single account.
@@ -122,6 +122,68 @@ func (s *Simulator) RealizedPnLToday() float64 { return s.realizedPnLToday }
 
 // ConsecutiveLosses reports the current consecutive-losing-trade streak.
 func (s *Simulator) ConsecutiveLosses() int { return s.consecutiveLosses }
+
+// StoppedOutSymbols reports the symbols banned from re-entry today
+// (SPEC.md 3.1), in no particular order.
+func (s *Simulator) StoppedOutSymbols() []string {
+	symbols := make([]string, 0, len(s.stoppedOutToday))
+	for symbol := range s.stoppedOutToday {
+		symbols = append(symbols, symbol)
+	}
+	return symbols
+}
+
+// State is a snapshot of everything needed to resume a Simulator exactly —
+// used to persist state across process restarts (SPEC.md 5.1: a crash must
+// never silently lose the day's position/risk-counter state).
+type State struct {
+	Seed              float64
+	Cash              float64
+	Position          *Position
+	StoppedOutSymbols []string
+	ConsecutiveLosses int
+	RealizedPnLToday  float64
+}
+
+// State captures the current state for persistence.
+func (s *Simulator) State() State {
+	var position *Position
+	if s.position != nil {
+		copy := *s.position
+		position = &copy
+	}
+	return State{
+		Seed:              s.seed,
+		Cash:              s.cash,
+		Position:          position,
+		StoppedOutSymbols: s.StoppedOutSymbols(),
+		ConsecutiveLosses: s.consecutiveLosses,
+		RealizedPnLToday:  s.RealizedPnLToday(),
+	}
+}
+
+// Restore reconstructs a Simulator from a previously saved State — the
+// counterpart to State(), used on process restart (SPEC.md 5.1).
+func Restore(cfg Config, state State) *Simulator {
+	var position *Position
+	if state.Position != nil {
+		copy := *state.Position
+		position = &copy
+	}
+	stoppedOutToday := make(map[string]bool, len(state.StoppedOutSymbols))
+	for _, symbol := range state.StoppedOutSymbols {
+		stoppedOutToday[symbol] = true
+	}
+	return &Simulator{
+		cfg:               cfg,
+		seed:              state.Seed,
+		cash:              state.Cash,
+		position:          position,
+		stoppedOutToday:   stoppedOutToday,
+		consecutiveLosses: state.ConsecutiveLosses,
+		realizedPnLToday:  state.RealizedPnLToday,
+	}
+}
 
 // DailyPnL reports realized P&L today plus the open position's unrealized
 // P&L at currentPriceOfHeld (ignored if there is no open position) — the
@@ -184,7 +246,7 @@ func (s *Simulator) openPosition(symbol string, price float64) Action {
 	commission := notional * s.cfg.CommissionRate
 	cost := notional + commission
 	s.cash -= cost
-	s.position = &Position{Symbol: symbol, Shares: shares, EntryPrice: price, costBasis: cost}
+	s.position = &Position{Symbol: symbol, Shares: shares, EntryPrice: price, CostBasis: cost}
 	return Action{Type: Bought, Symbol: symbol, Price: price, Shares: shares, Proceeds: -cost}
 }
 
@@ -193,7 +255,7 @@ func (s *Simulator) closePosition(symbol string, price float64, isStopLoss bool)
 	notional := price * float64(pos.Shares)
 	commission := notional * s.cfg.CommissionRate
 	proceeds := notional - commission
-	pnl := proceeds - pos.costBasis
+	pnl := proceeds - pos.CostBasis
 
 	s.cash += proceeds
 	s.realizedPnLToday += pnl
