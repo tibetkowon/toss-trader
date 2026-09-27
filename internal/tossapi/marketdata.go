@@ -9,6 +9,133 @@ import (
 	"strings"
 )
 
+// RankingPrice는 랭킹 항목의 가격 정보를 담습니다.
+type RankingPrice struct {
+	LastPrice  string `json:"lastPrice"`
+	BasePrice  string `json:"basePrice"`
+	ChangeRate string `json:"changeRate"`
+}
+
+// RankingItem은 거래대금 등 랭킹 한 항목과 응답 원문을 보존합니다.
+// 2026-09-27 실API로 확인한 실제 스키마를 반영합니다.
+type RankingItem struct {
+	Rank          int             `json:"rank"`
+	Symbol        string          `json:"symbol"`
+	Currency      string          `json:"currency"`
+	Price         RankingPrice    `json:"price"`
+	TradingVolume string          `json:"tradingVolume"`
+	TradingAmount string          `json:"tradingAmount"`
+	Raw           json.RawMessage `json:"-"`
+}
+
+// Rankings는 계좌 헤더 없이 유동성(거래대금 등) 랭킹을 조회합니다.
+// rankingType 예: "MARKET_TRADING_AMOUNT". duration 예: "1mo". marketCountry는 "KR" 또는 "US"만 허용됩니다.
+func (c *Client) Rankings(ctx context.Context, rankingType, duration, marketCountry string) ([]RankingItem, error) {
+	if strings.TrimSpace(rankingType) == "" {
+		return nil, errors.New("rankingType이 필요합니다")
+	}
+	if strings.TrimSpace(duration) == "" {
+		return nil, errors.New("duration이 필요합니다")
+	}
+	if marketCountry != "KR" && marketCountry != "US" {
+		return nil, errors.New("marketCountry는 KR 또는 US여야 합니다")
+	}
+	query := url.Values{
+		"type":          {rankingType},
+		"duration":      {duration},
+		"marketCountry": {marketCountry},
+	}
+	body, err := c.get(ctx, "RANKING", "/api/v1/rankings?"+query.Encode(), "")
+	if err != nil {
+		return nil, err
+	}
+	body = unwrapData(body)
+	var payload struct {
+		Rankings []RankingItem `json:"rankings"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, errors.New("잘못된 랭킹 응답")
+	}
+	var rawPayload struct {
+		Rankings []json.RawMessage `json:"rankings"`
+	}
+	if err := json.Unmarshal(body, &rawPayload); err != nil || len(rawPayload.Rankings) != len(payload.Rankings) {
+		return nil, errors.New("랭킹 응답 원문 파싱 실패")
+	}
+	for i := range payload.Rankings {
+		payload.Rankings[i].Raw = rawPayload.Rankings[i]
+	}
+	return payload.Rankings, nil
+}
+
+// StockWarnings는 계좌 헤더 없이 종목의 유의사항(정리매매/단기과열/투자경고·위험/VI 등)을 조회합니다.
+// 개별 유의사항 항목의 필드 스키마는 실제로 유의사항이 있는 종목으로 아직 확인하지 못해
+// 원문 그대로 보존합니다 — 호출자는 통상 len(warnings) > 0 여부만으로 제외 판단을 하면 됩니다.
+func (c *Client) StockWarnings(ctx context.Context, symbol string) ([]json.RawMessage, error) {
+	if strings.TrimSpace(symbol) == "" {
+		return nil, errors.New("symbol이 필요합니다")
+	}
+	body, err := c.get(ctx, "STOCK", "/api/v1/stocks/"+url.PathEscape(symbol)+"/warnings", "")
+	if err != nil {
+		return nil, err
+	}
+	body = unwrapData(body)
+	var warnings []json.RawMessage
+	if err := json.Unmarshal(body, &warnings); err != nil {
+		return nil, errors.New("잘못된 유의사항 응답")
+	}
+	return warnings, nil
+}
+
+// KoreanMarketDetail은 국내 종목 전용 시장 상태 플래그를 담습니다.
+// liquidationTrading이 true면 정리매매 종목입니다(SPEC.md 3.3의 운영 리스크 제외 대상).
+type KoreanMarketDetail struct {
+	LiquidationTrading  bool `json:"liquidationTrading"`
+	NxtSupported        bool `json:"nxtSupported"`
+	KrxTradingSuspended bool `json:"krxTradingSuspended"`
+	NxtTradingSuspended bool `json:"nxtTradingSuspended"`
+}
+
+// Stock은 종목 기본정보와 응답 원문을 보존합니다.
+// 시가총액은 별도 필드가 없어 SharesOutstanding × 현재가(Price)로 계산해야 합니다.
+type Stock struct {
+	Symbol             string              `json:"symbol"`
+	Name               string              `json:"name"`
+	EnglishName        string              `json:"englishName"`
+	Market             string              `json:"market"`
+	SecurityType       string              `json:"securityType"`
+	Status             string              `json:"status"`
+	Currency           string              `json:"currency"`
+	SharesOutstanding  string              `json:"sharesOutstanding"`
+	KoreanMarketDetail *KoreanMarketDetail `json:"koreanMarketDetail"`
+	Raw                json.RawMessage     `json:"-"`
+}
+
+// Stocks는 계좌 헤더 없이 하나 이상의 종목 기본정보를 조회합니다.
+func (c *Client) Stocks(ctx context.Context, symbols ...string) ([]Stock, error) {
+	if len(symbols) == 0 {
+		return nil, errors.New("symbols가 최소 1개 필요합니다")
+	}
+	query := url.Values{"symbols": {strings.Join(symbols, ",")}}
+	body, err := c.get(ctx, "STOCK", "/api/v1/stocks?"+query.Encode(), "")
+	if err != nil {
+		return nil, err
+	}
+	body = unwrapData(body)
+	var stocks []Stock
+	if err := json.Unmarshal(body, &stocks); err != nil {
+		return nil, errors.New("잘못된 종목 정보 응답")
+	}
+	var raws []json.RawMessage
+	if err := json.Unmarshal(body, &raws); err != nil || len(raws) != len(stocks) {
+		return nil, errors.New("종목 정보 응답 원문 파싱 실패")
+	}
+	for i := range stocks {
+		stocks[i].Raw = raws[i]
+	}
+	return stocks, nil
+}
+
 // Price는 종목의 현재가와 응답 원문을 보존합니다.
 // 2026-09-27 실API로 확인한 실제 스키마를 반영합니다: 조회는 symbols(복수) 쿼리
 // 파라미터를 쓰고, 응답은 배열입니다.

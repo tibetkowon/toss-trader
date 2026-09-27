@@ -232,6 +232,103 @@ func TestMarketCalendarClosedToday(t *testing.T) {
 	}
 }
 
+func TestRankings(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			writeToken(w)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/rankings" {
+			t.Errorf("랭킹 요청 메서드 또는 경로 불일치: %s %s", r.Method, r.URL.Path)
+		}
+		q := r.URL.Query()
+		if q.Get("type") != "MARKET_TRADING_AMOUNT" || q.Get("duration") != "1mo" || q.Get("marketCountry") != "KR" {
+			t.Errorf("랭킹 쿼리 불일치: %v", q)
+		}
+		fmt.Fprint(w, `{"rankedAt":"2026-09-23T20:17:38.787+09:00","rankings":[{"rank":1,"symbol":"000660","currency":"KRW","price":{"lastPrice":"1863000","basePrice":"1840000","changeRate":"0.0125"},"tradingVolume":"103629692","tradingAmount":"182438427324646"}]}`)
+	})
+	rankings, err := client.Rankings(context.Background(), "MARKET_TRADING_AMOUNT", "1mo", "KR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rankings) != 1 || rankings[0].Rank != 1 || rankings[0].Symbol != "000660" || rankings[0].Price.LastPrice != "1863000" || rankings[0].TradingAmount != "182438427324646" || len(rankings[0].Raw) == 0 {
+		t.Fatalf("랭킹 항목 불일치: %+v", rankings)
+	}
+}
+
+func TestRankingsInvalidArgs(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("잘못된 인자로 HTTP 요청이 발생했습니다")
+	})
+	if _, err := client.Rankings(context.Background(), "", "1mo", "KR"); err == nil {
+		t.Fatal("빈 rankingType을 허용했습니다")
+	}
+	if _, err := client.Rankings(context.Background(), "MARKET_TRADING_AMOUNT", "1mo", "XX"); err == nil {
+		t.Fatal("잘못된 marketCountry를 허용했습니다")
+	}
+}
+
+func TestStockWarnings(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			writeToken(w)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/stocks/005930/warnings" {
+			t.Errorf("유의사항 요청 메서드 또는 경로 불일치: %s %s", r.Method, r.URL.Path)
+		}
+		fmt.Fprint(w, `{"result":[]}`)
+	})
+	warnings, err := client.StockWarnings(context.Background(), "005930")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("유의사항 없음을 잘못 파싱했습니다: %+v", warnings)
+	}
+}
+
+func TestStockWarningsEmptySymbol(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("빈 symbol로 HTTP 요청이 발생했습니다")
+	})
+	if _, err := client.StockWarnings(context.Background(), ""); err == nil {
+		t.Fatal("빈 symbol을 허용했습니다")
+	}
+}
+
+func TestStocks(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			writeToken(w)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/stocks" {
+			t.Errorf("종목 정보 요청 메서드 또는 경로 불일치: %s %s", r.Method, r.URL.Path)
+		}
+		if r.URL.Query().Get("symbols") != "005930" {
+			t.Errorf("symbols 불일치: %q", r.URL.Query().Get("symbols"))
+		}
+		fmt.Fprint(w, `{"result":[{"symbol":"005930","name":"삼성전자","englishName":"SamsungElec","market":"KOSPI","securityType":"STOCK","status":"ACTIVE","currency":"KRW","sharesOutstanding":"5846278608","koreanMarketDetail":{"liquidationTrading":false,"nxtSupported":true,"krxTradingSuspended":false,"nxtTradingSuspended":false}}]}`)
+	})
+	stocks, err := client.Stocks(context.Background(), "005930")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stocks) != 1 || stocks[0].Name != "삼성전자" || stocks[0].SharesOutstanding != "5846278608" || stocks[0].KoreanMarketDetail == nil || stocks[0].KoreanMarketDetail.LiquidationTrading || len(stocks[0].Raw) == 0 {
+		t.Fatalf("종목 정보 불일치: %+v", stocks)
+	}
+}
+
+func TestStocksNoSymbols(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("symbols 없이 HTTP 요청이 발생했습니다")
+	})
+	if _, err := client.Stocks(context.Background()); err == nil {
+		t.Fatal("빈 symbols를 허용했습니다")
+	}
+}
+
 func TestMarketCalendarInvalidMarket(t *testing.T) {
 	for _, market := range []string{"XX", ""} {
 		t.Run(market, func(t *testing.T) {
