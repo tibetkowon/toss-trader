@@ -129,6 +129,8 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 
 	pollInterval := pollIntervalDuration()
 	const staleness = 30 * time.Second
+	heartbeatInterval := heartbeatIntervalDuration()
+	lastHeartbeat := time.Now()
 
 	for time.Now().Before(eodCutoff) {
 		observations := pollWatchlist(ctx, client)
@@ -138,6 +140,12 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 				log.Printf("세션 상태 저장 실패: %v", err)
 			}
 			publish(false, "")
+			lastHeartbeat = time.Now()
+		} else if time.Since(lastHeartbeat) >= heartbeatInterval {
+			// SPEC.md 9: 상태 변화가 없어도 주기적으로 하트비트를 올려서
+			// "서버가 살아있고 마지막 갱신이 오래되지 않았음"을 보여줍니다.
+			publish(false, "")
+			lastHeartbeat = time.Now()
 		}
 		time.Sleep(pollInterval)
 	}
@@ -344,6 +352,15 @@ func pollIntervalDuration() time.Duration {
 		}
 	}
 	return 4 * time.Second // SPEC.md 5.1의 3~5초 폴링 주기
+}
+
+func heartbeatIntervalDuration() time.Duration {
+	if v := os.Getenv("HEARTBEAT_INTERVAL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 60 * time.Second // SPEC.md 9의 주기적 하트비트 간격 — 실측 조정 예정(11절)
 }
 
 func eodBuffer() time.Duration {
