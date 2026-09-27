@@ -177,3 +177,46 @@ func TestCandlesRateLimitGroupIndependent(t *testing.T) {
 		t.Fatalf("할당량 소진 대기: %v", waits)
 	}
 }
+
+func TestMarketCalendar(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			writeToken(w)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/market-calendar/KR" {
+			t.Errorf("시장 캘린더 요청 메서드 또는 경로 불일치: %s %s", r.Method, r.URL.Path)
+		}
+		if r.URL.RawQuery != "" {
+			t.Errorf("시장 캘린더 조회에 쿼리가 포함되었습니다: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("X-Tossinvest-Account") != "" {
+			t.Error("시장 캘린더 조회에 계좌 헤더가 포함되었습니다")
+		}
+		w.Header().Set("X-RateLimit-Limit", "7")
+		fmt.Fprint(w, `{"isOpen":true}`)
+	})
+	calendar, err := client.MarketCalendar(context.Background(), "KR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calendar == nil || !calendar.IsOpen || len(calendar.Raw) == 0 {
+		t.Fatalf("개장 여부 또는 원문 불일치: %+v", calendar)
+	}
+	if limit := client.RateLimit("MARKET_INFO"); limit.Limit != 7 {
+		t.Fatalf("시장 정보 제한 그룹 불일치: %+v", limit)
+	}
+}
+
+func TestMarketCalendarInvalidMarket(t *testing.T) {
+	for _, market := range []string{"XX", ""} {
+		t.Run(market, func(t *testing.T) {
+			client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				t.Fatal("잘못된 market으로 HTTP 요청이 발생했습니다")
+			})
+			if _, err := client.MarketCalendar(context.Background(), market); err == nil {
+				t.Fatal("잘못된 market을 허용했습니다")
+			}
+		})
+	}
+}
