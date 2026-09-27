@@ -90,12 +90,12 @@ func TestAccountsThenHoldings(t *testing.T) {
 			if r.Header.Get("X-Tossinvest-Account") != "" {
 				t.Error("최초 계좌 조회에 계좌 헤더가 포함되었습니다")
 			}
-			fmt.Fprint(w, `{"data":[{"accountSeq":"account-1"},{"accountSeq":"account-2"}]}`)
+			fmt.Fprint(w, `{"result":[{"accountSeq":1,"accountNo":"111","accountType":"BROKERAGE"},{"accountSeq":2,"accountNo":"222","accountType":"BROKERAGE"}]}`)
 		case "/api/v1/holdings":
-			if r.Header.Get("X-Tossinvest-Account") != "account-2" {
+			if r.Header.Get("X-Tossinvest-Account") != "2" {
 				t.Error("선택한 accountSeq가 전달되지 않았습니다")
 			}
-			fmt.Fprint(w, `{"data":{"dailyProfitLoss":{"amount":-123.45,"rate":-1.2},"assets":[]}}`)
+			fmt.Fprint(w, `{"result":{"dailyProfitLoss":{"amount":{"krw":"-123.45","usd":null},"rate":"-1.2"}}}`)
 		default:
 			t.Errorf("예상하지 않은 경로: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -105,11 +105,11 @@ func TestAccountsThenHoldings(t *testing.T) {
 	if err != nil || len(accounts) != 2 {
 		t.Fatalf("Accounts: %v, %v", accounts, err)
 	}
-	holdings, err := client.Holdings(context.Background(), accounts[1].AccountSeq)
+	holdings, err := client.Holdings(context.Background(), accounts[1].AccountSeq.String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if holdings.DailyProfitLoss.Amount.String() != "-123.45" || holdings.DailyProfitLoss.Rate.String() != "-1.2" || len(holdings.Raw) == 0 {
+	if holdings.DailyProfitLoss.Amount.KRW != "-123.45" || holdings.DailyProfitLoss.Rate != "-1.2" || len(holdings.Raw) == 0 {
 		t.Fatalf("일간손익 또는 원문 불일치: %+v", holdings)
 	}
 	if tokenCalls.Load() != 1 {
@@ -142,7 +142,7 @@ func TestRateLimitRetryAfter(t *testing.T) {
 					if r.URL.Path == "/oauth2/token" {
 						writeToken(w)
 					} else {
-						fmt.Fprint(w, `[{"accountSeq":"one"}]`)
+						fmt.Fprint(w, `[{"accountSeq":1}]`)
 					}
 				})
 				client.now = func() time.Time { return now }
@@ -181,9 +181,9 @@ func TestExhaustedQuotaAndIndependentGroups(t *testing.T) {
 			w.Header().Set("X-RateLimit-Limit", "2")
 			w.Header().Set("X-RateLimit-Remaining", "0")
 			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(5*time.Second).Unix(), 10))
-			fmt.Fprint(w, `[{"accountSeq":"one"}]`)
+			fmt.Fprint(w, `[{"accountSeq":1}]`)
 		case "/api/v1/holdings":
-			fmt.Fprint(w, `{"dailyProfitLoss":{"amount":0,"rate":0}}`)
+			fmt.Fprint(w, `{"dailyProfitLoss":{"amount":{"krw":"0"},"rate":"0"}}`)
 		}
 	})
 	client.now = func() time.Time { return now }
@@ -242,7 +242,7 @@ func TestRetryBoundAndCancellation(t *testing.T) {
 }
 
 func TestInvalidResponses(t *testing.T) {
-	for _, body := range []string{`{}`, `{"dailyProfitLoss":{"amount":0}}`, `{"dailyProfitLoss":{"amount":null,"rate":0}}`} {
+	for _, body := range []string{`{}`, `{"dailyProfitLoss":{"amount":{"krw":"0"}}}`, `{"dailyProfitLoss":{"amount":{"krw":"0"},"rate":null}}`} {
 		t.Run(body, func(t *testing.T) {
 			client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/oauth2/token" {
@@ -310,7 +310,7 @@ func TestUnauthorizedRetriesOnceWithFreshToken(t *testing.T) {
 			if r.Header.Get("Authorization") != "Bearer token-2" {
 				t.Errorf("재시도에 새 토큰이 쓰이지 않았습니다: %s", r.Header.Get("Authorization"))
 			}
-			fmt.Fprint(w, `{"dailyProfitLoss":{"amount":1,"rate":1}}`)
+			fmt.Fprint(w, `{"dailyProfitLoss":{"amount":{"krw":"1"},"rate":"1"}}`)
 			return
 		}
 		t.Fatalf("예상하지 않은 경로: %s", r.URL.Path)
@@ -319,7 +319,7 @@ func TestUnauthorizedRetriesOnceWithFreshToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("401 이후 자동 재시도가 실패했습니다: %v", err)
 	}
-	if holdings.DailyProfitLoss.Amount.String() != "1" {
+	if holdings.DailyProfitLoss.Amount.KRW != "1" {
 		t.Fatalf("holdings: %+v", holdings)
 	}
 	if tokenCalls.Load() != 2 || holdingsCalls.Load() != 2 {

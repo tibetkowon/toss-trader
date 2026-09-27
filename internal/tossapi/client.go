@@ -39,19 +39,44 @@ type Client struct {
 }
 
 type Account struct {
-	AccountSeq string `json:"accountSeq"`
+	AccountSeq  json.Number `json:"accountSeq"`
+	AccountNo   string      `json:"accountNo"`
+	AccountType string      `json:"accountType"`
 }
 
-type ProfitLoss struct {
-	Amount json.Number `json:"amount"`
-	Rate   json.Number `json:"rate"`
+// Money는 통화별 금액을 담습니다. 실API에서 모든 금액/비율은 JSON 문자열로 내려오며,
+// 해당 통화가 없으면 null(빈 문자열로 언마샬됨)입니다 — 빈 문자열을 오류로 취급하지 않습니다.
+type Money struct {
+	KRW string `json:"krw"`
+	USD string `json:"usd"`
 }
 
-// HoldingsResponse는 스펙에 정의된 일간손익을 노출합니다.
-// 전체 원문도 보존하여 아직 스키마가 명시되지 않은 자산 정보를 잃지 않습니다.
+type MoneyWithCost struct {
+	Amount          Money `json:"amount"`
+	AmountAfterCost Money `json:"amountAfterCost"`
+}
+
+type ProfitLossDetail struct {
+	Amount          Money  `json:"amount"`
+	AmountAfterCost Money  `json:"amountAfterCost"`
+	Rate            string `json:"rate"`
+	RateAfterCost   string `json:"rateAfterCost"`
+}
+
+type DailyProfitLoss struct {
+	Amount Money  `json:"amount"`
+	Rate   string `json:"rate"`
+}
+
+// HoldingsResponse는 2026-09-27 실API로 확인한 실제 스키마를 반영합니다.
+// items[]의 개별 항목 스키마는 테스트 계좌에 보유 종목이 없어 아직 미검증이라 원문만 보존합니다.
 type HoldingsResponse struct {
-	DailyProfitLoss ProfitLoss      `json:"dailyProfitLoss"`
-	Raw             json.RawMessage `json:"-"`
+	TotalPurchaseAmount Money             `json:"totalPurchaseAmount"`
+	MarketValue         MoneyWithCost     `json:"marketValue"`
+	ProfitLoss          ProfitLossDetail  `json:"profitLoss"`
+	DailyProfitLoss     DailyProfitLoss   `json:"dailyProfitLoss"`
+	Items               []json.RawMessage `json:"items"`
+	Raw                 json.RawMessage   `json:"-"`
 }
 
 type RateLimit struct {
@@ -194,7 +219,7 @@ func (c *Client) Accounts(ctx context.Context) ([]Account, error) {
 		return nil, errors.New("잘못된 계좌 목록 응답")
 	}
 	for _, account := range accounts {
-		if strings.TrimSpace(account.AccountSeq) == "" {
+		if account.AccountSeq == "" {
 			return nil, errors.New("계좌 응답에 accountSeq가 없습니다")
 		}
 	}
@@ -211,17 +236,21 @@ func (c *Client) Holdings(ctx context.Context, accountSeq string) (*HoldingsResp
 	}
 	body = unwrapData(body)
 	var result HoldingsResponse
-	if err := json.Unmarshal(body, &result); err != nil || result.DailyProfitLoss.Amount == "" || result.DailyProfitLoss.Rate == "" {
-		return nil, errors.New("보유자산 응답에 유효한 dailyProfitLoss.amount/rate가 없습니다")
+	if err := json.Unmarshal(body, &result); err != nil || result.DailyProfitLoss.Rate == "" {
+		return nil, errors.New("보유자산 응답에 유효한 dailyProfitLoss.rate가 없습니다")
 	}
 	result.Raw = append(json.RawMessage(nil), body...)
 	return &result, nil
 }
 
-// 스펙에 응답 봉투가 명시되지 않아 직접 응답과 data 봉투를 모두 수용합니다.
+// unwrapData는 실API가 실제로 쓰는 "result" 봉투를 벗깁니다.
+// "data" 봉투는 혹시 다른 엔드포인트가 다를 경우를 대비한 하위 호환 폴백입니다.
 func unwrapData(body []byte) []byte {
 	var envelope map[string]json.RawMessage
 	if json.Unmarshal(body, &envelope) == nil {
+		if result, ok := envelope["result"]; ok {
+			return result
+		}
 		if data, ok := envelope["data"]; ok {
 			return data
 		}
