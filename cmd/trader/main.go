@@ -17,7 +17,7 @@ func (a calendarAdapter) IsMarketOpen(ctx context.Context, market string) (bool,
 	if err != nil {
 		return false, err
 	}
-	return calendar.IsOpen, nil
+	return calendar.IsOpenToday(), nil
 }
 
 func main() {

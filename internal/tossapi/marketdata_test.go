@@ -19,20 +19,20 @@ func TestPrice(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/prices" {
 			t.Errorf("시세 요청 메서드 또는 경로 불일치: %s %s", r.Method, r.URL.Path)
 		}
-		if r.URL.Query().Get("symbol") != "AAPL" {
-			t.Errorf("symbol 불일치: %q", r.URL.Query().Get("symbol"))
+		if r.URL.Query().Get("symbols") != "AAPL" {
+			t.Errorf("symbols 불일치: %q", r.URL.Query().Get("symbols"))
 		}
 		if r.Header.Get("X-Tossinvest-Account") != "" {
 			t.Error("시세 조회에 계좌 헤더가 포함되었습니다")
 		}
 		w.Header().Set("X-RateLimit-Limit", "7")
-		fmt.Fprint(w, `{"price": 123.45}`)
+		fmt.Fprint(w, `{"result":[{"symbol":"AAPL","timestamp":"2026-09-23T19:59:59.000+09:00","lastPrice":"123.45","currency":"USD"}]}`)
 	})
 	price, err := client.Price(context.Background(), "AAPL")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if price == nil || price.Price.String() != "123.45" || len(price.Raw) == 0 {
+	if price == nil || price.Symbol != "AAPL" || price.LastPrice != "123.45" || price.Currency != "USD" || len(price.Raw) == 0 {
 		t.Fatalf("현재가 또는 원문 불일치: %+v", price)
 	}
 	if limit := client.RateLimit("MARKET_DATA"); limit.Limit != 7 {
@@ -55,7 +55,7 @@ func TestPriceEmptySymbol(t *testing.T) {
 }
 
 func TestCandles(t *testing.T) {
-	const body = `[{"open":1,"high":2,"low":0.5,"close":1.5}]`
+	const body = `{"candles":[{"timestamp":"2026-09-23T00:00:00.000+09:00","openPrice":"1","highPrice":"2","lowPrice":"0.5","closePrice":"1.5","volume":"100","currency":"KRW"}],"nextBefore":"2026-09-18T00:00:00.000+09:00"}`
 	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/oauth2/token" {
 			writeToken(w)
@@ -76,7 +76,7 @@ func TestCandles(t *testing.T) {
 		}
 		fmt.Fprint(w, body)
 	})
-	candles, err := client.Candles(context.Background(), "AAPL", "1d", 10, "")
+	candles, nextBefore, err := client.Candles(context.Background(), "AAPL", "1d", 10, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,11 +84,14 @@ func TestCandles(t *testing.T) {
 		t.Fatalf("캔들 개수 불일치: %d", len(candles))
 	}
 	candle := candles[0]
-	if candle.Open.String() != "1" || candle.High.String() != "2" || candle.Low.String() != "0.5" || candle.Close.String() != "1.5" {
-		t.Fatalf("OHLC 불일치: %+v", candle)
+	if candle.OpenPrice != "1" || candle.HighPrice != "2" || candle.LowPrice != "0.5" || candle.ClosePrice != "1.5" || candle.Volume != "100" {
+		t.Fatalf("OHLCV 불일치: %+v", candle)
 	}
-	if string(candle.Raw) != body[1:len(body)-1] {
-		t.Fatalf("캔들 원문 불일치: %s", candle.Raw)
+	if len(candle.Raw) == 0 {
+		t.Fatal("캔들 원문이 비어 있습니다")
+	}
+	if nextBefore != "2026-09-18T00:00:00.000+09:00" {
+		t.Fatalf("nextBefore 불일치: %q", nextBefore)
 	}
 }
 
@@ -106,17 +109,17 @@ func TestCandlesWithBefore(t *testing.T) {
 		if query.Get("symbol") != "AAPL" || query.Get("interval") != "1d" || query.Get("count") != "10" || query.Get("before") != before {
 			t.Errorf("캔들 쿼리 불일치: %v", query)
 		}
-		fmt.Fprint(w, `{"data":[{"open":1,"high":2,"low":0.5,"close":1.5}]}`)
+		fmt.Fprint(w, `{"result":{"candles":[{"openPrice":"1","highPrice":"2","lowPrice":"0.5","closePrice":"1.5"}],"nextBefore":""}}`)
 	})
-	candles, err := client.Candles(context.Background(), "AAPL", "1d", 10, before)
+	candles, nextBefore, err := client.Candles(context.Background(), "AAPL", "1d", 10, before)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candles) != 1 || candles[0].Open.String() != "1" || candles[0].High.String() != "2" || candles[0].Low.String() != "0.5" || candles[0].Close.String() != "1.5" {
+	if len(candles) != 1 || candles[0].OpenPrice != "1" || candles[0].HighPrice != "2" || candles[0].LowPrice != "0.5" || candles[0].ClosePrice != "1.5" {
 		t.Fatalf("캔들 응답 불일치: %+v", candles)
 	}
-	if string(candles[0].Raw) != `{"open":1,"high":2,"low":0.5,"close":1.5}` {
-		t.Fatalf("캔들 원문 불일치: %s", candles[0].Raw)
+	if nextBefore != "" {
+		t.Fatalf("nextBefore 불일치: %q", nextBefore)
 	}
 }
 
@@ -126,7 +129,7 @@ func TestCandlesCountOutOfRange(t *testing.T) {
 			client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 				t.Fatal("잘못된 count로 HTTP 요청이 발생했습니다")
 			})
-			if _, err := client.Candles(context.Background(), "AAPL", "1d", count, ""); err == nil {
+			if _, _, err := client.Candles(context.Background(), "AAPL", "1d", count, ""); err == nil {
 				t.Fatal("범위를 벗어난 count를 허용했습니다")
 			}
 		})
@@ -143,9 +146,9 @@ func TestCandlesRateLimitGroupIndependent(t *testing.T) {
 			w.Header().Set("X-RateLimit-Limit", "2")
 			w.Header().Set("X-RateLimit-Remaining", "0")
 			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(5*time.Second).Unix(), 10))
-			fmt.Fprint(w, `[{"open":1,"high":2,"low":0.5,"close":1.5}]`)
+			fmt.Fprint(w, `{"candles":[{"openPrice":"1","highPrice":"2","lowPrice":"0.5","closePrice":"1.5"}]}`)
 		case "/api/v1/prices":
-			fmt.Fprint(w, `{"price":1.5}`)
+			fmt.Fprint(w, `{"result":[{"symbol":"AAPL","lastPrice":"1.5","currency":"USD"}]}`)
 		default:
 			t.Errorf("예상하지 않은 경로: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -158,7 +161,7 @@ func TestCandlesRateLimitGroupIndependent(t *testing.T) {
 		now = now.Add(d)
 		return nil
 	}
-	if _, err := client.Candles(context.Background(), "AAPL", "1d", 10, ""); err != nil {
+	if _, _, err := client.Candles(context.Background(), "AAPL", "1d", 10, ""); err != nil {
 		t.Fatal(err)
 	}
 	if limit := client.RateLimit("MARKET_DATA_CHART"); limit.Limit != 2 || limit.Remaining != 0 || !limit.BlockedUntil.Equal(now.Add(5*time.Second)) {
@@ -170,7 +173,7 @@ func TestCandlesRateLimitGroupIndependent(t *testing.T) {
 	if len(waits) != 0 {
 		t.Fatal("MARKET_DATA_CHART 제한이 MARKET_DATA 요청을 지연했습니다")
 	}
-	if _, err := client.Candles(context.Background(), "AAPL", "1d", 10, ""); err != nil {
+	if _, _, err := client.Candles(context.Background(), "AAPL", "1d", 10, ""); err != nil {
 		t.Fatal(err)
 	}
 	if len(waits) != 1 || waits[0] != 5*time.Second {
@@ -179,6 +182,7 @@ func TestCandlesRateLimitGroupIndependent(t *testing.T) {
 }
 
 func TestMarketCalendar(t *testing.T) {
+	const body = `{"today":{"date":"2026-09-23","integrated":{"preMarket":{"startTime":"2026-09-23T08:00:00.000+09:00","endTime":"2026-09-23T09:00:00.000+09:00"},"regularMarket":{"startTime":"2026-09-23T09:00:00.000+09:00","endTime":"2026-09-23T15:30:00.000+09:00"},"afterMarket":{"startTime":"2026-09-23T15:30:00.000+09:00","endTime":"2026-09-23T20:00:00.000+09:00"}}},"previousBusinessDay":{"date":"2026-09-22","integrated":null},"nextBusinessDay":{"date":"2026-09-24","integrated":null}}`
 	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/oauth2/token" {
 			writeToken(w)
@@ -194,17 +198,37 @@ func TestMarketCalendar(t *testing.T) {
 			t.Error("시장 캘린더 조회에 계좌 헤더가 포함되었습니다")
 		}
 		w.Header().Set("X-RateLimit-Limit", "7")
-		fmt.Fprint(w, `{"isOpen":true}`)
+		fmt.Fprint(w, body)
 	})
 	calendar, err := client.MarketCalendar(context.Background(), "KR")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calendar == nil || !calendar.IsOpen || len(calendar.Raw) == 0 {
+	if calendar == nil || !calendar.IsOpenToday() || len(calendar.Raw) == 0 {
 		t.Fatalf("개장 여부 또는 원문 불일치: %+v", calendar)
+	}
+	if calendar.Today.Integrated.RegularMarket.StartTime != "2026-09-23T09:00:00.000+09:00" {
+		t.Fatalf("정규장 시작 시각 불일치: %+v", calendar.Today.Integrated.RegularMarket)
 	}
 	if limit := client.RateLimit("MARKET_INFO"); limit.Limit != 7 {
 		t.Fatalf("시장 정보 제한 그룹 불일치: %+v", limit)
+	}
+}
+
+func TestMarketCalendarClosedToday(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			writeToken(w)
+			return
+		}
+		fmt.Fprint(w, `{"today":{"date":"2026-09-27","integrated":null},"previousBusinessDay":{"date":"2026-09-25","integrated":null},"nextBusinessDay":{"date":"2026-09-28","integrated":null}}`)
+	})
+	calendar, err := client.MarketCalendar(context.Background(), "KR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calendar.IsOpenToday() {
+		t.Fatal("휴장일을 개장으로 판단했습니다")
 	}
 }
 
