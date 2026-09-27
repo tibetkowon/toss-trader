@@ -43,6 +43,23 @@ const (
 	SkippedZeroShares
 )
 
+func (t ActionType) String() string {
+	switch t {
+	case NoAction:
+		return "NoAction"
+	case Bought:
+		return "Bought"
+	case StoppedOut:
+		return "StoppedOut"
+	case ClosedEndOfDay:
+		return "ClosedEndOfDay"
+	case SkippedZeroShares:
+		return "SkippedZeroShares"
+	default:
+		return "Unknown"
+	}
+}
+
 // Action reports the outcome of one OnTick call.
 type Action struct {
 	Type     ActionType

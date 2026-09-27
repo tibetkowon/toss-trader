@@ -244,3 +244,19 @@ func TestDailyPnLReflectsUnrealized(t *testing.T) {
 		t.Fatalf("평가손익 반영 불일치: got %v want %v", dailyPnL, wantUnrealized)
 	}
 }
+
+func TestActionTypeString(t *testing.T) {
+	cases := map[ActionType]string{
+		NoAction:          "NoAction",
+		Bought:            "Bought",
+		StoppedOut:        "StoppedOut",
+		ClosedEndOfDay:    "ClosedEndOfDay",
+		SkippedZeroShares: "SkippedZeroShares",
+		ActionType(99):    "Unknown",
+	}
+	for actionType, want := range cases {
+		if got := actionType.String(); got != want {
+			t.Errorf("%d.String() = %q, want %q", actionType, got, want)
+		}
+	}
+}
