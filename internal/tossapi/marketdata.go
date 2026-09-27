@@ -111,6 +111,34 @@ type Stock struct {
 	Raw                json.RawMessage     `json:"-"`
 }
 
+// Commission은 시장별 수수료율과 적용 기간을 담습니다.
+// 2026-09-27 실API로 확인: startDate/endDate가 있는 시장별 요율 이력이며,
+// 한국 증권거래세 등 commissionRate에 포함되지 않는 별도 비용이 있을 수 있어
+// 시뮬레이션은 이 값을 "브로커 수수료"로만 취급합니다(SPEC.md 6.1/8).
+type Commission struct {
+	MarketCountry  string `json:"marketCountry"`
+	CommissionRate string `json:"commissionRate"`
+	StartDate      string `json:"startDate"`
+	EndDate        string `json:"endDate"`
+}
+
+// Commissions는 계좌 헤더가 필요한(계좌별로 다를 수 있는) 수수료율 목록을 조회합니다.
+func (c *Client) Commissions(ctx context.Context, accountSeq string) ([]Commission, error) {
+	if strings.TrimSpace(accountSeq) == "" {
+		return nil, errors.New("accountSeq가 필요합니다")
+	}
+	body, err := c.get(ctx, "ASSET", "/api/v1/commissions", accountSeq)
+	if err != nil {
+		return nil, err
+	}
+	body = unwrapData(body)
+	var commissions []Commission
+	if err := json.Unmarshal(body, &commissions); err != nil {
+		return nil, errors.New("잘못된 수수료 응답")
+	}
+	return commissions, nil
+}
+
 // Stocks는 계좌 헤더 없이 하나 이상의 종목 기본정보를 조회합니다.
 func (c *Client) Stocks(ctx context.Context, symbols ...string) ([]Stock, error) {
 	if len(symbols) == 0 {

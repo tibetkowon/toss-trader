@@ -329,6 +329,38 @@ func TestStocksNoSymbols(t *testing.T) {
 	}
 }
 
+func TestCommissions(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			writeToken(w)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/commissions" {
+			t.Errorf("수수료 요청 메서드 또는 경로 불일치: %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("X-Tossinvest-Account") != "1" {
+			t.Error("계좌 헤더가 전달되지 않았습니다")
+		}
+		fmt.Fprint(w, `{"result":[{"marketCountry":"KR","commissionRate":"0.00015","startDate":"2021-01-01","endDate":"9999-12-31"},{"marketCountry":"US","commissionRate":"0.001","startDate":null,"endDate":"2026-09-28"}]}`)
+	})
+	commissions, err := client.Commissions(context.Background(), "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commissions) != 2 || commissions[0].MarketCountry != "KR" || commissions[0].CommissionRate != "0.00015" {
+		t.Fatalf("수수료 목록 불일치: %+v", commissions)
+	}
+}
+
+func TestCommissionsEmptyAccount(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("빈 accountSeq로 HTTP 요청이 발생했습니다")
+	})
+	if _, err := client.Commissions(context.Background(), ""); err == nil {
+		t.Fatal("빈 accountSeq를 허용했습니다")
+	}
+}
+
 func TestMarketCalendarInvalidMarket(t *testing.T) {
 	for _, market := range []string{"XX", ""} {
 		t.Run(market, func(t *testing.T) {
