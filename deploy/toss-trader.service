@@ -1,0 +1,37 @@
+# systemd unit for the toss-trader binary (SPEC.md 5.1).
+#
+# Install:
+#   sudo cp deploy/toss-trader.service /etc/systemd/system/
+#   sudo mkdir -p /etc/toss-trader
+#   sudo $EDITOR /etc/toss-trader/env   # MARKET=, TOSS_CLIENT_ID_SECRET=, TOSS_CLIENT_SECRET_SECRET=,
+#                                       # SNAPSHOT_BUCKET=, SESSION_DB_PATH=, etc. — never commit this file
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now toss-trader
+#
+# Cloud Scheduler starts the VM (SPEC.md 2.1); this unit starts the binary
+# on boot and restarts it if it crashes (SPEC.md 5.1) — recovery on restart
+# is the binary's own job (internal/session), not this unit's.
+[Unit]
+Description=toss-trader auto-trading service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/toss-trader/trader
+WorkingDirectory=/opt/toss-trader
+EnvironmentFile=/etc/toss-trader/env
+Restart=on-failure
+RestartSec=5
+# 짧은 시간에 반복 크래시하면 재시작을 멈추고 자기정지 백스톱(SPEC.md 2.1)에
+# 정리를 맡깁니다 — 무한 재시작 루프로 API 요청을 계속 쏘는 것을 방지합니다.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+User=toss-trader
+Group=toss-trader
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/toss-trader
+
+[Install]
+WantedBy=multi-user.target
