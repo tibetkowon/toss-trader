@@ -61,6 +61,26 @@ func (s *Store) Save(ctx context.Context, date, market string, state simulator.S
 	return err
 }
 
+// LatestCash returns the ending cash from the most recently saved day for
+// market, if any — used to seed a brand new trading day with the prior
+// day's compounded balance (SPEC.md 4.1) rather than always resetting to a
+// fixed starting amount.
+func (s *Store) LatestCash(ctx context.Context, market string) (cash float64, ok bool, err error) {
+	row := s.db.QueryRowContext(ctx, `SELECT state_json FROM session_state WHERE market = ? ORDER BY trading_date DESC LIMIT 1`, market)
+	var data string
+	if err := row.Scan(&data); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	var state simulator.State
+	if err := json.Unmarshal([]byte(data), &state); err != nil {
+		return 0, false, err
+	}
+	return state.Cash, true, nil
+}
+
 // Load retrieves the saved state for (date, market). ok is false when
 // nothing has ever been saved for that key (the normal case at the start of
 // a fresh trading day) — that is not an error.

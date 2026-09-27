@@ -121,6 +121,37 @@ func TestDifferentKeysDoNotCollide(t *testing.T) {
 	}
 }
 
+func TestLatestCash(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "session.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	if _, ok, err := store.LatestCash(ctx, "KR"); err != nil || ok {
+		t.Fatalf("아무것도 저장하지 않았는데 ok=%v err=%v", ok, err)
+	}
+
+	if err := store.Save(ctx, "2026-09-25", "KR", simulator.State{Cash: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(ctx, "2026-09-26", "KR", simulator.State{Cash: 2000}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(ctx, "2026-09-26", "US", simulator.State{Cash: 9999}); err != nil {
+		t.Fatal(err)
+	}
+
+	cash, ok, err := store.LatestCash(ctx, "KR")
+	if err != nil || !ok {
+		t.Fatalf("최근 현금 조회 실패: ok=%v err=%v", ok, err)
+	}
+	if cash != 2000 {
+		t.Fatalf("가장 최근 날짜의 현금이 아닙니다: got %v want 2000", cash)
+	}
+}
+
 func TestReopenSamePathPersists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.db")
 	ctx := context.Background()
