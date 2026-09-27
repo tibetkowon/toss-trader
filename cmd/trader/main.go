@@ -30,11 +30,27 @@ func (a calendarAdapter) IsMarketOpen(ctx context.Context, market string) (bool,
 	return calendar.IsOpenToday(), nil
 }
 
+// detectMarket infers today's session from the current KST time of day.
+// SPEC.md 2.1's two boot windows (~08:50 and ~22:20 KST) never overlap, so
+// a morning boot/restart is always for KR and an evening/night one is
+// always for US — no external signal from Cloud Scheduler is needed.
+func detectMarket(now time.Time) string {
+	kst, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		kst = time.FixedZone("KST", 9*60*60)
+	}
+	hour := now.In(kst).Hour()
+	if hour >= 6 && hour < 18 {
+		return "KR"
+	}
+	return "US"
+}
+
 func main() {
 	market := os.Getenv("MARKET")
 	if market != "KR" && market != "US" {
-		log.Print("필수 환경 변수 MARKET은 정확히 KR 또는 US여야 합니다")
-		os.Exit(1)
+		market = detectMarket(time.Now())
+		log.Printf("MARKET 환경변수가 없어 현재 시각(KST) 기준으로 %s로 자동 판단합니다", market)
 	}
 
 	ctx := context.Background()
