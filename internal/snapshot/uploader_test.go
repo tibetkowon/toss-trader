@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestGCSUploader(t *testing.T) {
@@ -31,9 +32,9 @@ func TestGCSUploader(t *testing.T) {
 		{"누락된 토큰", `{}`, "Google", 200, 200, "잘못된", 0},
 		{"공백 토큰", `{"access_token":" "}`, "Google", 200, 200, "잘못된", 0},
 		{"응답 크기 초과", strings.Repeat("x", (1<<16)+1), "Google", 200, 200, "크기 초과", 0},
-		{"업로드 권한 오류", `{"access_token":"tok-1"}`, "Google", 200, 403, "GCS 업로드 HTTP 상태 403", 1},
-		{"업로드 서버 오류", `{"access_token":"tok-1"}`, "Google", 200, 500, "GCS 업로드 HTTP 상태 500", 1},
-		{"리디렉션 거부", `{"access_token":"tok-1"}`, "Google", 200, 302, "GCS 업로드 HTTP 상태 302", 1},
+		{"업로드 권한 오류", `{"access_token":"tok-1"}`, "Google", 200, 403, "GCS 업로드 HTTP 상태 403", 3},
+		{"업로드 서버 오류", `{"access_token":"tok-1"}`, "Google", 200, 500, "GCS 업로드 HTTP 상태 500", 3},
+		{"리디렉션 거부", `{"access_token":"tok-1"}`, "Google", 200, 302, "GCS 업로드 HTTP 상태 302", 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
@@ -75,6 +76,7 @@ func TestGCSUploader(t *testing.T) {
 			u := NewGCSUploader(nil, "test-bucket")
 			u.metadataURL = metadata.URL + "/instance/service-accounts/default/token"
 			u.gcsURL = gcs.URL
+			u.sleep = func(context.Context, time.Duration) error { return nil }
 			err := u.Upload(context.Background(), object, "text/html; charset=utf-8", payload)
 			if tc.wantErr == "" {
 				if err != nil {
@@ -101,6 +103,7 @@ func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
 
 func TestGCSUploaderRequestErrors(t *testing.T) {
 	u := NewGCSUploader(&http.Client{Transport: failingTransport{}}, "bucket")
+	u.sleep = func(context.Context, time.Duration) error { return nil }
 	if err := u.Upload(context.Background(), "status.json", "application/json", nil); err == nil || strings.Contains(err.Error(), "비공개") {
 		t.Fatalf("전송 오류: %v", err)
 	}
@@ -136,11 +139,53 @@ func TestGCSUploaderUploadTransportError(t *testing.T) {
 	u := NewGCSUploader(nil, "bucket")
 	u.metadataURL = metadata.URL
 	u.gcsURL = gcs.URL
+	u.sleep = func(context.Context, time.Duration) error { return nil }
 	if err := u.Upload(context.Background(), "status.json", "application/json", nil); err == nil || !strings.Contains(err.Error(), "GCS 업로드 호출 실패") {
 		t.Fatalf("업로드 전송 오류: %v", err)
 	}
 	u.gcsURL = "://invalid"
 	if err := u.Upload(context.Background(), "status.json", "application/json", nil); err == nil || !strings.Contains(err.Error(), "요청 생성 실패") {
 		t.Fatalf("업로드 URL 오류: %v", err)
+	}
+}
+
+// TestGCSUploaderRetriesTransientFailure covers the case observed live
+// 2026-09-28: GCS intermittently returned a non-2xx that a bare retry with
+// a fresh token resolved (SPEC.md 11 — root cause not conclusively
+// identified). Upload must succeed once the transient failure clears,
+// without exhausting all retries.
+func TestGCSUploaderRetriesTransientFailure(t *testing.T) {
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Metadata-Flavor", "Google")
+		fmt.Fprint(w, `{"access_token":"tok-1"}`)
+	}))
+	defer metadata.Close()
+	var calls atomic.Int32
+	gcs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) < 3 {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer gcs.Close()
+
+	u := NewGCSUploader(nil, "bucket")
+	u.metadataURL = metadata.URL
+	u.gcsURL = gcs.URL
+	var slept []time.Duration
+	u.sleep = func(_ context.Context, d time.Duration) error {
+		slept = append(slept, d)
+		return nil
+	}
+
+	if err := u.Upload(context.Background(), "status.json", "application/json", []byte("{}")); err != nil {
+		t.Fatalf("두 번 실패 후 세 번째 시도에서 성공해야 합니다: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("호출 횟수: %d, 기대: 3", calls.Load())
+	}
+	if len(slept) != 2 {
+		t.Fatalf("재시도 사이 대기 횟수: %d, 기대: 2", len(slept))
 	}
 }

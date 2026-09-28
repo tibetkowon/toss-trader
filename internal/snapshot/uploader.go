@@ -26,6 +26,7 @@ type GCSUploader struct {
 	bucket      string
 	metadataURL string
 	gcsURL      string
+	sleep       func(context.Context, time.Duration) error // overridable in tests to skip real delays
 }
 
 var _ Uploader = (*GCSUploader)(nil)
@@ -44,13 +45,50 @@ func NewGCSUploader(client *http.Client, bucket string) *GCSUploader {
 		bucket:      bucket,
 		metadataURL: "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
 		gcsURL:      "https://storage.googleapis.com/upload/storage/v1",
+		sleep:       sleepContext,
 	}
 }
 
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// Upload retries a few times on failure with a short fixed backoff — GCS
+// has occasionally returned a transient non-2xx (observed live, 2026-09-28,
+// cause not conclusively identified despite ruling out request
+// construction — see SPEC.md 11) that a bare retry with a fresh token
+// resolves. This only affects dashboard freshness (SPEC.md 9), never
+// trading decisions, so a few retries with brief pauses is an acceptable
+// cost.
 func (u *GCSUploader) Upload(ctx context.Context, object, contentType string, data []byte) error {
 	if strings.TrimSpace(u.bucket) == "" || object == "" || strings.TrimSpace(contentType) == "" {
 		return errors.New("버킷, 객체 이름, 콘텐츠 유형이 필요합니다")
 	}
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			if err := u.sleep(ctx, time.Duration(attempt-1)*500*time.Millisecond); err != nil {
+				return err
+			}
+		}
+		if err := u.uploadOnce(ctx, object, contentType, data); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
+func (u *GCSUploader) uploadOnce(ctx context.Context, object, contentType string, data []byte) error {
 	token, err := u.metadataToken(ctx)
 	if err != nil {
 		return err
