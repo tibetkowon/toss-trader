@@ -207,8 +207,8 @@ func TestMarketCalendar(t *testing.T) {
 	if calendar == nil || !calendar.IsOpenToday() || len(calendar.Raw) == 0 {
 		t.Fatalf("개장 여부 또는 원문 불일치: %+v", calendar)
 	}
-	if calendar.Today.Integrated.RegularMarket.StartTime != "2026-09-23T09:00:00.000+09:00" {
-		t.Fatalf("정규장 시작 시각 불일치: %+v", calendar.Today.Integrated.RegularMarket)
+	if calendar.Today.RegularSession().StartTime != "2026-09-23T09:00:00.000+09:00" {
+		t.Fatalf("정규장 시작 시각 불일치: %+v", calendar.Today.RegularSession())
 	}
 	if limit := client.RateLimit("MARKET_INFO"); limit.Limit != 7 {
 		t.Fatalf("시장 정보 제한 그룹 불일치: %+v", limit)
@@ -358,6 +358,39 @@ func TestCommissionsEmptyAccount(t *testing.T) {
 	})
 	if _, err := client.Commissions(context.Background(), ""); err == nil {
 		t.Fatal("빈 accountSeq를 허용했습니다")
+	}
+}
+
+// TestMarketCalendarUSShape uses the real US response shape confirmed
+// live 2026-09-28: unlike KR, there is no "integrated" wrapper at all —
+// preMarket/regularMarket/afterMarket (plus an unexplained "dayMarket")
+// sit directly on the day object. IsOpenToday()/RegularSession() must
+// handle both shapes (see MarketDay's doc comment).
+func TestMarketCalendarUSShape(t *testing.T) {
+	const body = `{"today":{"date":"2026-09-28","dayMarket":{"startTime":"2026-09-28T09:00:00.000+09:00","endTime":"2026-09-28T17:00:00.000+09:00"},"preMarket":{"startTime":"2026-09-28T17:00:00.000+09:00","endTime":"2026-09-28T22:30:00.000+09:00"},"regularMarket":{"startTime":"2026-09-28T22:30:00.000+09:00","endTime":"2026-09-29T05:00:00.000+09:00"},"afterMarket":{"startTime":"2026-09-29T05:00:00.000+09:00","endTime":"2026-09-29T08:50:00.000+09:00"}},"previousBusinessDay":{"date":"2026-09-25"},"nextBusinessDay":{"date":"2026-09-29"}}`
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			writeToken(w)
+			return
+		}
+		if r.URL.Path != "/api/v1/market-calendar/US" {
+			t.Errorf("경로 불일치: %s", r.URL.Path)
+		}
+		fmt.Fprint(w, body)
+	})
+	calendar, err := client.MarketCalendar(context.Background(), "US")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !calendar.IsOpenToday() {
+		t.Fatal("US 개장일을 휴장으로 잘못 판단했습니다(integrated 래퍼가 없는 실제 구조)")
+	}
+	regular := calendar.Today.RegularSession()
+	if regular == nil || regular.StartTime != "2026-09-28T22:30:00.000+09:00" || regular.EndTime != "2026-09-29T05:00:00.000+09:00" {
+		t.Fatalf("정규장 시간 불일치: %+v", regular)
+	}
+	if calendar.Today.Integrated != nil {
+		t.Fatalf("US 응답에는 integrated가 없어야 합니다: %+v", calendar.Today.Integrated)
 	}
 }
 

@@ -271,15 +271,39 @@ type MarketSessions struct {
 	AfterMarket   *MarketSessionWindow `json:"afterMarket"`
 }
 
-// MarketDay는 특정 날짜가 거래일인지와(Integrated가 nil이면 휴장) 세션 시간을 담습니다.
+// MarketDay는 특정 날짜의 세션 시간을 담습니다. **KR과 US의 실제 응답 구조가
+// 서로 다릅니다** (2026-09-28 실API로 확인):
+//   - KR: `{"date", "integrated": {preMarket, regularMarket, afterMarket} | null}`
+//     — 휴장일에는 integrated 전체가 null.
+//   - US: `{"date", "dayMarket", "preMarket", "regularMarket", "afterMarket"}`
+//     — integrated 래퍼가 아예 없고 세션들이 date와 같은 레벨에 바로 있습니다.
+//     휴장일에 각 세션이 어떻게 표시되는지는 아직 실제 휴장일로 확인 못 했습니다
+//     (11절) — null이 될 것으로 가정하고 구현했습니다.
+//
+// RegularSession()으로 두 구조를 모두 흡수해서 통일된 방식으로 조회하세요 —
+// Integrated/RegularMarket 필드를 직접 읽지 마세요.
 type MarketDay struct {
-	Date       string          `json:"date"`
-	Integrated *MarketSessions `json:"integrated"`
+	Date          string               `json:"date"`
+	Integrated    *MarketSessions      `json:"integrated"`    // KR
+	DayMarket     *MarketSessionWindow `json:"dayMarket"`     // US에만 존재, 용도 미확인
+	PreMarket     *MarketSessionWindow `json:"preMarket"`     // US에서는 이 레벨에 직접 존재
+	RegularMarket *MarketSessionWindow `json:"regularMarket"` // US에서는 이 레벨에 직접 존재
+	AfterMarket   *MarketSessionWindow `json:"afterMarket"`   // US에서는 이 레벨에 직접 존재
 }
 
-// MarketCalendar는 2026-09-27 실API로 확인한 실제 스키마를 반영합니다.
-// isOpen 같은 단순 불리언 필드는 없으며, "오늘이 거래일인가"는
-// Today.Integrated가 nil인지로 판단합니다(IsOpenToday 참고).
+// RegularSession returns the day's regular-market window regardless of
+// whether the response nested it under "integrated" (KR) or put it directly
+// on the day (US). Returns nil when there is no session (휴장일).
+func (d MarketDay) RegularSession() *MarketSessionWindow {
+	if d.Integrated != nil {
+		return d.Integrated.RegularMarket
+	}
+	return d.RegularMarket
+}
+
+// MarketCalendar는 KR/US 실API로 확인한 실제 스키마를 반영합니다(위 MarketDay
+// 참고). isOpen 같은 단순 불리언 필드는 없으며, "오늘이 거래일인가"는
+// RegularSession()이 nil인지로 판단합니다(IsOpenToday 참고).
 type MarketCalendar struct {
 	Today               MarketDay       `json:"today"`
 	PreviousBusinessDay MarketDay       `json:"previousBusinessDay"`
@@ -287,10 +311,10 @@ type MarketCalendar struct {
 	Raw                 json.RawMessage `json:"-"`
 }
 
-// IsOpenToday는 오늘 세션 정보가 존재하는지(=오늘이 거래일인지)를 보고합니다.
-// 휴장일(주말/공휴일)에는 Today.Integrated가 null로 내려옵니다.
+// IsOpenToday는 오늘 정규장 세션 정보가 존재하는지(=오늘이 거래일인지)를
+// 보고합니다. 휴장일(주말/공휴일)에는 세션 정보가 없습니다.
 func (m *MarketCalendar) IsOpenToday() bool {
-	return m.Today.Integrated != nil
+	return m.Today.RegularSession() != nil
 }
 
 // MarketCalendar는 계좌 헤더 없이 국내(KR) 또는 미국(US) 시장의 캘린더를 조회합니다.

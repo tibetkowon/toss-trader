@@ -109,11 +109,15 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	if err != nil {
 		return err
 	}
-	sessionStart, err := time.Parse(time.RFC3339, calendar.Today.Integrated.RegularMarket.StartTime)
+	regular := calendar.Today.RegularSession()
+	if regular == nil {
+		return errors.New("오늘 정규장 세션 정보가 없습니다(휴장일이어야 하는데 여기까지 온 것은 버그입니다)")
+	}
+	sessionStart, err := time.Parse(time.RFC3339, regular.StartTime)
 	if err != nil {
 		return err
 	}
-	sessionEnd, err := time.Parse(time.RFC3339, calendar.Today.Integrated.RegularMarket.EndTime)
+	sessionEnd, err := time.Parse(time.RFC3339, regular.EndTime)
 	if err != nil {
 		return err
 	}
