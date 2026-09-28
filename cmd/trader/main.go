@@ -156,6 +156,10 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		observations := pollWatchlist(ctx, client)
 		actions := tradingloop.ProcessTick(sim, setups, observations, time.Now(), staleness)
 		if len(actions) > 0 {
+			for _, action := range actions {
+				log.Printf("체결: %s %s %d주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
+					action.Type, action.Symbol, action.Shares, action.Price, action.PnL, sim.Cash())
+			}
 			if err := store.Save(ctx, today, market, sim.State()); err != nil {
 				log.Printf("세션 상태 저장 실패: %v", err)
 			}
@@ -179,7 +183,9 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		if err != nil {
 			return err
 		}
-		sim.OnTick(setups[pos.Symbol], last, true)
+		eodAction := sim.OnTick(setups[pos.Symbol], last, true)
+		log.Printf("장마감 강제청산: %s %s %d주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
+			eodAction.Type, eodAction.Symbol, eodAction.Shares, eodAction.Price, eodAction.PnL, sim.Cash())
 	}
 
 	if err := store.Save(ctx, today, market, sim.State()); err != nil {
