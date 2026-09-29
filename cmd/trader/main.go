@@ -200,6 +200,12 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		log.Printf("세션 상태 저장 실패: %v", err)
 	}
 	publish(false, "")
+
+	if data, err := buildSnapshot(ctx, sim, client, false, "", recentOrders).RenderJSON(); err != nil {
+		log.Printf("마감 히스토리 스냅샷 생성 실패: %v", err)
+	} else if err := uploader.Upload(ctx, historyObjectKey(today, market), "application/json", data); err != nil {
+		log.Printf("마감 히스토리 업로드 실패: %v", err)
+	}
 	return nil
 }
 
@@ -336,7 +342,11 @@ func appendRecentOrder(orders []snapshot.Order, o snapshot.Order, max int) []sna
 	return orders
 }
 
-func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order) {
+// buildSnapshot assembles the current dashboard snapshot without uploading
+// it — shared by publishSnapshot (live status.json/status.html) and the
+// EOD history archive (historyObjectKey) so both reflect the exact same
+// state.
+func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order) snapshot.Snapshot {
 	s := snapshot.Snapshot{
 		DailyLossLimitPct: 0.05,
 		KillSwitch:        snapshot.KillSwitchStatus{Halted: halted, Reason: reason},
@@ -360,7 +370,11 @@ func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *s
 	} else {
 		s.DailyPnL = sim.RealizedPnLToday()
 	}
+	return s
+}
 
+func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order) {
+	s := buildSnapshot(ctx, sim, client, halted, reason, recentOrders)
 	data, err := s.RenderJSON()
 	if err != nil {
 		log.Printf("스냅샷 JSON 생성 실패: %v", err)

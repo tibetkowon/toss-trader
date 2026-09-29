@@ -112,6 +112,14 @@ func TestToOrderMapsActionType(t *testing.T) {
 	}
 }
 
+func TestHistoryObjectKey(t *testing.T) {
+	got := historyObjectKey("2026-09-28", "KR")
+	want := "history/2026-09-28-KR.json"
+	if got != want {
+		t.Errorf("historyObjectKey() = %q, want %q", got, want)
+	}
+}
+
 func TestToOrderBoughtIsBuySide(t *testing.T) {
 	at := time.Date(2026, 9, 29, 0, 0, 17, 0, time.UTC)
 	action := simulator.Action{Type: simulator.Bought, Symbol: "229200", Price: 14145, Shares: 6}
