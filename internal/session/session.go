@@ -98,3 +98,35 @@ func (s *Store) Load(ctx context.Context, date, market string) (state simulator.
 	}
 	return state, true, nil
 }
+
+// DailyRecord is one saved day's ending state for one market.
+type DailyRecord struct {
+	Date   string
+	Market string
+	State  simulator.State
+}
+
+// All returns every saved (date, market) row, ordered by market then by
+// trading_date ascending — the raw material for a day-over-day equity
+// curve (SPEC.md 11's "4주 누적 최대손실 계산 도구" gap).
+func (s *Store) All(ctx context.Context) ([]DailyRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT trading_date, market, state_json FROM session_state ORDER BY market ASC, trading_date ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []DailyRecord
+	for rows.Next() {
+		var date, market, data string
+		if err := rows.Scan(&date, &market, &data); err != nil {
+			return nil, err
+		}
+		var state simulator.State
+		if err := json.Unmarshal([]byte(data), &state); err != nil {
+			return nil, err
+		}
+		records = append(records, DailyRecord{Date: date, Market: market, State: state})
+	}
+	return records, rows.Err()
+}

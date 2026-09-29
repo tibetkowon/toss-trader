@@ -152,6 +152,42 @@ func TestLatestCash(t *testing.T) {
 	}
 }
 
+func TestAllReturnsEveryRowOrderedByMarketThenDate(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "session.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	must := func(date, market string, cash float64) {
+		if err := store.Save(ctx, date, market, simulator.State{Seed: 100000, Cash: cash}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("2026-09-29", "KR", 12558.28)
+	must("2026-09-28", "KR", 97441.01)
+	must("2026-09-28", "US", 100000)
+
+	got, err := store.All(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3", len(got))
+	}
+	want := []struct {
+		date, market string
+	}{
+		{"2026-09-28", "KR"}, {"2026-09-29", "KR"}, {"2026-09-28", "US"},
+	}
+	for i, w := range want {
+		if got[i].Date != w.date || got[i].Market != w.market {
+			t.Errorf("got[%d] = (%s, %s), want (%s, %s)", i, got[i].Date, got[i].Market, w.date, w.market)
+		}
+	}
+}
+
 func TestReopenSamePathPersists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.db")
 	ctx := context.Background()
