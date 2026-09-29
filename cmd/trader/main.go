@@ -300,6 +300,32 @@ func describeSkippedObservations(observations []tradingloop.PriceObservation, no
 	return lines
 }
 
+// toOrder는 simulator.Action을 대시보드용 snapshot.Order로 변환한다.
+func toOrder(a simulator.Action, at time.Time) snapshot.Order {
+	side := "SELL"
+	if a.Type == simulator.Bought {
+		side = "BUY"
+	}
+	return snapshot.Order{
+		Symbol:    a.Symbol,
+		Side:      side,
+		Quantity:  float64(a.Shares),
+		Price:     a.Price,
+		Status:    a.Type.String(),
+		CreatedAt: at,
+	}
+}
+
+// appendRecentOrder는 최근 주문 목록에 o를 추가하고, max개를 넘으면 가장
+// 오래된 것부터 버린다.
+func appendRecentOrder(orders []snapshot.Order, o snapshot.Order, max int) []snapshot.Order {
+	orders = append(orders, o)
+	if len(orders) > max {
+		orders = orders[len(orders)-max:]
+	}
+	return orders
+}
+
 func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string) {
 	s := snapshot.Snapshot{
 		DailyLossLimitPct: 0.05,
