@@ -266,6 +266,13 @@ func todaySetups(ctx context.Context, client *tossapi.Client) map[string]simulat
 	return setups
 }
 
+// historyObjectKey는 그날 마감 스냅샷을 영구 보관할 GCS 오브젝트 이름이다.
+// status.json은 매번 덮어써져서 하루만 지나도 전날 결과를 알 수 없었던
+// 문제(2026-09-28 분석 중 발견)를 고치기 위해 도입.
+func historyObjectKey(date, market string) string {
+	return fmt.Sprintf("history/%s-%s.json", date, market)
+}
+
 func pollWatchlist(ctx context.Context, client *tossapi.Client) []tradingloop.PriceObservation {
 	observations := make([]tradingloop.PriceObservation, 0, len(strategy.Watchlist))
 	for _, entry := range strategy.Watchlist {
