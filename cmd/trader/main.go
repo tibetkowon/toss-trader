@@ -143,8 +143,9 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	setups := todaySetups(ctx, client)
 
 	uploader := snapshot.NewGCSUploader(nil, os.Getenv("SNAPSHOT_BUCKET"))
+	var recentOrders []snapshot.Order
 	publish := func(halted bool, reason string) {
-		publishSnapshot(ctx, uploader, sim, client, halted, reason)
+		publishSnapshot(ctx, uploader, sim, client, halted, reason, recentOrders)
 	}
 	publish(false, "")
 
@@ -164,6 +165,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 			for _, action := range actions {
 				log.Printf("체결: %s %s %d주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
 					action.Type, action.Symbol, action.Shares, action.Price, action.PnL, sim.Cash())
+				recentOrders = appendRecentOrder(recentOrders, toOrder(action, now), 10)
 			}
 			if err := store.Save(ctx, today, market, sim.State()); err != nil {
 				log.Printf("세션 상태 저장 실패: %v", err)
@@ -191,6 +193,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		eodAction := sim.OnTick(setups[pos.Symbol], last, true)
 		log.Printf("장마감 강제청산: %s %s %d주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
 			eodAction.Type, eodAction.Symbol, eodAction.Shares, eodAction.Price, eodAction.PnL, sim.Cash())
+		recentOrders = appendRecentOrder(recentOrders, toOrder(eodAction, time.Now()), 10)
 	}
 
 	if err := store.Save(ctx, today, market, sim.State()); err != nil {
@@ -326,10 +329,11 @@ func appendRecentOrder(orders []snapshot.Order, o snapshot.Order, max int) []sna
 	return orders
 }
 
-func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string) {
+func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order) {
 	s := snapshot.Snapshot{
 		DailyLossLimitPct: 0.05,
 		KillSwitch:        snapshot.KillSwitchStatus{Halted: halted, Reason: reason},
+		RecentOrders:      recentOrders,
 		UpdatedAt:         time.Now(),
 	}
 	s.Seed = sim.State().Seed // 당일 시작 시드 — DailyLossProgress의 분모(SPEC.md 4.3)

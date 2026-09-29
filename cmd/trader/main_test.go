@@ -2,9 +2,12 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/tibetkowon/toss-trader/internal/simulator"
+	"github.com/tibetkowon/toss-trader/internal/snapshot"
 	"github.com/tibetkowon/toss-trader/internal/tradingloop"
 )
 
@@ -80,5 +83,40 @@ func TestDescribeSkippedObservations(t *testing.T) {
 				t.Errorf("describeSkippedObservations() = %d lines, want %d (%v)", len(got), c.wantN, got)
 			}
 		})
+	}
+}
+
+func TestAppendRecentOrderCapsLength(t *testing.T) {
+	var orders []snapshot.Order
+	for i := 0; i < 15; i++ {
+		orders = appendRecentOrder(orders, snapshot.Order{Symbol: fmt.Sprintf("%d", i)}, 10)
+	}
+	if len(orders) != 10 {
+		t.Fatalf("len(orders) = %d, want 10", len(orders))
+	}
+	if orders[0].Symbol != "5" {
+		t.Errorf("oldest kept order = %q, want %q (should have dropped 0-4)", orders[0].Symbol, "5")
+	}
+	if orders[9].Symbol != "14" {
+		t.Errorf("newest order = %q, want %q", orders[9].Symbol, "14")
+	}
+}
+
+func TestToOrderMapsActionType(t *testing.T) {
+	at := time.Date(2026, 9, 28, 0, 12, 0, 0, time.UTC)
+	action := simulator.Action{Type: simulator.StoppedOut, Symbol: "396500", Price: 38465, Shares: 2, PnL: -1571.5}
+	got := toOrder(action, at)
+	want := snapshot.Order{Symbol: "396500", Side: "SELL", Quantity: 2, Price: 38465, Status: "StoppedOut", CreatedAt: at}
+	if got != want {
+		t.Errorf("toOrder() = %+v, want %+v", got, want)
+	}
+}
+
+func TestToOrderBoughtIsBuySide(t *testing.T) {
+	at := time.Date(2026, 9, 29, 0, 0, 17, 0, time.UTC)
+	action := simulator.Action{Type: simulator.Bought, Symbol: "229200", Price: 14145, Shares: 6}
+	got := toOrder(action, at)
+	if got.Side != "BUY" {
+		t.Errorf("Side = %q, want BUY", got.Side)
 	}
 }
