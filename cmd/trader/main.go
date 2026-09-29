@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strconv"
@@ -153,8 +154,12 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	lastHeartbeat := time.Now()
 
 	for time.Now().Before(eodCutoff) {
+		now := time.Now()
 		observations := pollWatchlist(ctx, client)
-		actions := tradingloop.ProcessTick(sim, setups, observations, time.Now(), staleness)
+		for _, line := range describeSkippedObservations(observations, now, staleness) {
+			log.Println(line)
+		}
+		actions := tradingloop.ProcessTick(sim, setups, observations, now, staleness)
 		if len(actions) > 0 {
 			for _, action := range actions {
 				log.Printf("체결: %s %s %d주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
@@ -279,6 +284,20 @@ func pollWatchlist(ctx context.Context, client *tossapi.Client) []tradingloop.Pr
 		observations = append(observations, tradingloop.PriceObservation{Symbol: entry.Symbol, Price: last, Timestamp: ts})
 	}
 	return observations
+}
+
+func describeSkippedObservations(observations []tradingloop.PriceObservation, now time.Time, maxAge time.Duration) []string {
+	var lines []string
+	for _, obs := range observations {
+		if obs.Err != nil {
+			lines = append(lines, fmt.Sprintf("시세 조회 실패로 이번 틱 스킵: %s: %v", obs.Symbol, obs.Err))
+			continue
+		}
+		if age := now.Sub(obs.Timestamp); age > maxAge {
+			lines = append(lines, fmt.Sprintf("시세가 오래돼(stale) 이번 틱 스킵: %s (age=%s > %s)", obs.Symbol, age.Round(time.Second), maxAge))
+		}
+	}
+	return lines
 }
 
 func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string) {

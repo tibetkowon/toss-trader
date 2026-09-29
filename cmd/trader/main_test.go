@@ -1,8 +1,11 @@
 package main
 
 import (
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/tibetkowon/toss-trader/internal/tradingloop"
 )
 
 func TestDetectMarket(t *testing.T) {
@@ -30,6 +33,51 @@ func TestDetectMarket(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := detectMarket(c.time); got != c.want {
 				t.Errorf("detectMarket(%v) = %q, want %q", c.time, got, c.want)
+			}
+		})
+	}
+}
+
+func TestDescribeSkippedObservations(t *testing.T) {
+	now := time.Date(2026, 9, 28, 5, 0, 0, 0, time.UTC)
+	maxAge := 30 * time.Second
+
+	cases := []struct {
+		name  string
+		obs   []tradingloop.PriceObservation
+		wantN int
+	}{
+		{
+			name:  "정상 관측치는 로그 없음",
+			obs:   []tradingloop.PriceObservation{{Symbol: "005930", Price: 70000, Timestamp: now}},
+			wantN: 0,
+		},
+		{
+			name:  "에러난 관측치는 한 줄",
+			obs:   []tradingloop.PriceObservation{{Symbol: "005930", Err: errors.New("rate limited")}},
+			wantN: 1,
+		},
+		{
+			name:  "스테일 관측치도 한 줄",
+			obs:   []tradingloop.PriceObservation{{Symbol: "005930", Price: 70000, Timestamp: now.Add(-time.Minute)}},
+			wantN: 1,
+		},
+		{
+			name: "8개 전부 에러면 8줄",
+			obs: []tradingloop.PriceObservation{
+				{Symbol: "005930", Err: errors.New("x")}, {Symbol: "000660", Err: errors.New("x")},
+				{Symbol: "066570", Err: errors.New("x")}, {Symbol: "005380", Err: errors.New("x")},
+				{Symbol: "034020", Err: errors.New("x")}, {Symbol: "396500", Err: errors.New("x")},
+				{Symbol: "229200", Err: errors.New("x")}, {Symbol: "069500", Err: errors.New("x")},
+			},
+			wantN: 8,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := describeSkippedObservations(c.obs, now, maxAge)
+			if len(got) != c.wantN {
+				t.Errorf("describeSkippedObservations() = %d lines, want %d (%v)", len(got), c.wantN, got)
 			}
 		})
 	}
