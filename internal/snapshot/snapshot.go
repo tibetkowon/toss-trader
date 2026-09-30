@@ -43,6 +43,7 @@ type Snapshot struct {
 	KillSwitch        KillSwitchStatus `json:"kill_switch"`
 	RecentOrders      []Order          `json:"recent_orders"`
 	UpdatedAt         time.Time        `json:"updated_at"`
+	Screener          *ScreenerStatus  `json:"screener,omitempty"`
 }
 
 // DailyLossProgress는 손실 한도 사용 비율을 반환합니다(1 = 100%).
@@ -98,5 +99,17 @@ var dashboard = template.Must(template.New("dashboard").Parse(`<!doctype html>
 {{range .RecentOrders}}<tr><td>{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}</td><td>{{.Symbol}}</td><td>{{.Side}}</td><td>{{.Quantity}}</td><td>{{.Price}}</td><td>{{.Status}}</td></tr>
 {{else}}<tr><td colspan="6">최근 주문 없음</td></tr>{{end}}
 </tbody></table>
+{{with .Screener}}
+<h2>활성 종목</h2>
+<table><thead><tr><th>순위</th><th>종목</th><th>목표가</th><th>편입 경로</th></tr></thead><tbody>
+{{range .Active}}<tr><td>{{.Rank}}</td><td>{{.Symbol}}</td><td>{{.Target}}</td><td>{{.Origin}}</td></tr>
+{{else}}<tr><td colspan="4">활성 종목 없음</td></tr>{{end}}
+</tbody></table>
+<h2>탈락 종목</h2>
+<table><thead><tr><th>종목</th><th>사유</th></tr></thead><tbody>
+{{range .Rejections}}<tr><td>{{.Symbol}}</td><td>{{.Reason}}</td></tr>
+{{else}}<tr><td colspan="2">탈락 종목 없음</td></tr>{{end}}
+</tbody></table>
+{{end}}
 </body></html>
 `))
