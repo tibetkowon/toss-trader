@@ -8,6 +8,10 @@
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now toss-trader
 #
+# Deploy: run deploy/release.sh on the dev machine; the VM pulls the new binary at its
+# next service start. Installing this unit also needs /opt/toss-trader/fetch-release.sh
+# (a copy of deploy/fetch-release.sh, root-owned, mode 0755).
+#
 # Cloud Scheduler starts the VM (SPEC.md 2.1); this unit starts the binary
 # on boot and restarts it if it crashes (SPEC.md 5.1) — recovery on restart
 # is the binary's own job (internal/session), not this unit's.
@@ -24,6 +28,11 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+# 서비스가 뜨기 전에 비공개 릴리스 버킷에서 최신 바이너리를 받습니다(deploy/fetch-release.sh).
+# "-"로 실패를 무시하고 "+"로 샌드박스 밖(root)에서 실행합니다 — 다운로드 문제가 부팅을 막지 않습니다.
+Environment=RELEASE_BUCKET=toss-trader-release-495614
+ExecStartPre=-+/opt/toss-trader/fetch-release.sh
+TimeoutStartSec=180
 ExecStart=/opt/toss-trader/trader
 WorkingDirectory=/opt/toss-trader
 EnvironmentFile=/etc/toss-trader/env
