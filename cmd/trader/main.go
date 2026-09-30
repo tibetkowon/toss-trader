@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/tibetkowon/toss-trader/internal/lifecycle"
+	"github.com/tibetkowon/toss-trader/internal/screener"
 	"github.com/tibetkowon/toss-trader/internal/session"
 	"github.com/tibetkowon/toss-trader/internal/simulator"
 	"github.com/tibetkowon/toss-trader/internal/snapshot"
-	"github.com/tibetkowon/toss-trader/internal/strategy"
 	"github.com/tibetkowon/toss-trader/internal/tossapi"
 	"github.com/tibetkowon/toss-trader/internal/tradingloop"
 )
@@ -124,6 +124,28 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	}
 	eodCutoff := sessionEnd.Add(-eodBuffer())
 
+	sessionDate := sessionStart.Format(dateLayout)
+	scfg := screenerConfig(market, commissionRate, os.Getenv)
+	ev := screener.NewEvaluator(client, scfg, sessionStart)
+	if restored, skipped, err := restoreEvals(ctx, store, ev, sessionDate, market); err != nil {
+		log.Printf("저장된 평가 복구 실패(처음부터 평가합니다): %v", err)
+	} else if restored+skipped > 0 {
+		log.Printf("저장된 평가 %d개를 복구했습니다(깨진 항목 %d개 건너뜀)", restored, skipped)
+	}
+	saveEval := evalSaver(ctx, store, sessionDate, market)
+	ev.OnEvaluated = func(e screener.Entry) {
+		log.Println(describeEntry(e))
+		saveEval(e)
+	}
+	gate := screener.NewGate(scfg, client, ev, sessionStart)
+	chase := tradingloop.NewChaseGuard(chaseLimitFromEnv(os.Getenv))
+	log.Printf("스크리너 설정: %+v, 추격 상한 %.2f%%", scfg, chaseLimitFromEnv(os.Getenv)*100)
+
+	// 장 시작 전 대기 시간에 어제 랭킹 상위 종목을 미리 평가합니다(정규장 시작 30초 전까지).
+	res := gate.PreWarm(ctx, sessionStart.Add(-30*time.Second))
+	log.Printf("사전 평가: 랭킹 %d개(상위 %v) 중 %d개 평가, %d개 통과, 시간초과=%v, 랭킹 오류=%v, 종목 오류 %d건",
+		res.Ranked, res.Top, res.Evaluated, res.Passed, res.TimedOut, res.Err, len(res.SymbolErrs))
+
 	// 오늘 시가는 정규장이 실제로 시작된 뒤에만 의미가 있습니다(장 시작 전 Price()는
 	// 전일 마지막 체결가를 반환) — Cloud Scheduler가 버퍼를 두고 미리 기동하므로
 	// (SPEC.md 2.1) 여기서 세션 시작까지 대기합니다.
@@ -139,13 +161,15 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	if err != nil {
 		return err
 	}
-
-	setups := todaySetups(ctx, client, sessionStart)
+	gate.SetSeed(sim.State().Seed)
 
 	uploader := snapshot.NewGCSUploader(nil, os.Getenv("SNAPSHOT_BUCKET"))
 	var recentOrders []snapshot.Order
+	screenerStatus := func() *snapshot.ScreenerStatus {
+		return buildScreenerStatus(gate.Active(), gate.Rank, ev.Entries(), 30)
+	}
 	publish := func(halted bool, reason string) {
-		publishSnapshot(ctx, uploader, sim, client, halted, reason, recentOrders)
+		publishSnapshot(ctx, uploader, sim, client, halted, reason, recentOrders, screenerStatus())
 	}
 	publish(false, "")
 
@@ -156,9 +180,22 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 
 	for time.Now().Before(eodCutoff) {
 		now := time.Now()
-		observations := pollWatchlist(ctx, client)
+		held := ""
+		if pos, ok := sim.Position(); ok {
+			held = pos.Symbol
+		}
+		for _, line := range describeUpdate(gate.Refresh(ctx, now), gate.Rank) {
+			log.Println(line)
+		}
+		symbols := pollSymbols(gate.Active(), held)
+		setups := setupsFor(gate.Setup, symbols, held)
+		observations := pollPrices(ctx, client, symbols)
 		for _, line := range describeSkippedObservations(observations, now, staleness) {
 			log.Println(line)
+		}
+		observations, blocked := chase.Filter(observations, setups, held != "", now, staleness)
+		for _, symbol := range blocked {
+			log.Printf("추격 상한 초과로 오늘 진입에서 제외: %s (목표가 %.2f)", symbol, setups[symbol].TargetPrice)
 		}
 		actions := tradingloop.ProcessTick(sim, setups, observations, now, staleness)
 		if len(actions) > 0 {
@@ -190,7 +227,8 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		if err != nil {
 			return err
 		}
-		eodAction := sim.OnTick(setups[pos.Symbol], last, true)
+		eodSetup := setupsFor(gate.Setup, nil, pos.Symbol)[pos.Symbol]
+		eodAction := sim.OnTick(eodSetup, last, true)
 		log.Printf("장마감 강제청산: %s %s %d주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
 			eodAction.Type, eodAction.Symbol, eodAction.Shares, eodAction.Price, eodAction.PnL, sim.Cash())
 		recentOrders = appendRecentOrder(recentOrders, toOrder(eodAction, time.Now()), 10)
@@ -201,7 +239,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	}
 	publish(false, "")
 
-	if data, err := buildSnapshot(ctx, sim, client, false, "", recentOrders).RenderJSON(); err != nil {
+	if data, err := buildSnapshot(ctx, sim, client, false, "", recentOrders, screenerStatus()).RenderJSON(); err != nil {
 		log.Printf("마감 히스토리 스냅샷 생성 실패: %v", err)
 	} else if err := uploader.Upload(ctx, historyObjectKey(today, market), "application/json", data); err != nil {
 		log.Printf("마감 히스토리 업로드 실패: %v", err)
@@ -227,125 +265,11 @@ func loadOrStartSimulator(ctx context.Context, store *session.Store, cfg simulat
 	return simulator.New(cfg, startingCash), nil
 }
 
-// todaySetups computes each watchlist symbol's Setup for today. A symbol
-// whose data can't be fetched or is incomplete is logged and skipped rather
-// than aborting the whole session — a transient failure on one of eight
-// symbols shouldn't take the other seven off watch for the day.
-//
-// The candles API returns today's still-forming bar first, so "yesterday" and
-// the MA window are picked by date via strategy.SplitBars (2026-09-30: treating
-// candles[0] as yesterday made every target price collapse to ~today's open).
-func todaySetups(ctx context.Context, client *tossapi.Client, sessionStart time.Time) map[string]simulator.Setup {
-	sessionDate := sessionStart.Format(dateLayout)
-	const k = 0.5
-	const maWindow = 5
-	setups := make(map[string]simulator.Setup, len(strategy.Watchlist))
-	for _, entry := range strategy.Watchlist {
-		candles, _, err := client.Candles(ctx, entry.Symbol, "1d", maWindow+2, "")
-		if err != nil {
-			log.Printf("%s 일봉 조회 실패, 오늘 감시 대상에서 제외합니다: %v", entry.Symbol, err)
-			continue
-		}
-		bars := make([]strategy.DailyBar, 0, len(candles))
-		for _, c := range candles {
-			if len(c.Timestamp) < len(dateLayout) {
-				continue
-			}
-			open, _ := strconv.ParseFloat(c.OpenPrice, 64)
-			high, _ := strconv.ParseFloat(c.HighPrice, 64)
-			low, _ := strconv.ParseFloat(c.LowPrice, 64)
-			closePrice, _ := strconv.ParseFloat(c.ClosePrice, 64)
-			bars = append(bars, strategy.DailyBar{Date: c.Timestamp[:len(dateLayout)], Open: open, High: high, Low: low, Close: closePrice})
-		}
-		_, prior := strategy.SplitBars(bars, sessionDate)
-		if len(prior) < maWindow {
-			log.Printf("%s 일봉 데이터 부족(어제 이전 %d개), 오늘 감시 대상에서 제외합니다", entry.Symbol, len(prior))
-			continue
-		}
-		closes := make([]float64, maWindow)
-		for i := 0; i < maWindow; i++ {
-			closes[i] = prior[i].Close
-		}
-
-		todayOpen, ok := regularSessionOpen(ctx, client, entry.Symbol, sessionStart)
-		if !ok {
-			price, err := client.Price(ctx, entry.Symbol)
-			if err != nil {
-				log.Printf("%s 정규장 시가와 현재가 조회가 모두 실패해 오늘 감시 대상에서 제외합니다: %v", entry.Symbol, err)
-				continue
-			}
-			todayOpen, _ = strconv.ParseFloat(price.LastPrice, 64)
-			log.Printf("%s 정규장 첫 1분봉을 찾지 못해 현재가(%.2f)를 시가로 대신 사용합니다", entry.Symbol, todayOpen)
-		}
-
-		target, trendOK, err := strategy.ComputeDaySetup(todayOpen, prior[0], closes, k)
-		if err != nil {
-			log.Printf("%s 설정 계산 실패, 오늘 감시 대상에서 제외합니다: %v", entry.Symbol, err)
-			continue
-		}
-		log.Printf("%s 셋업: 시가=%.2f 전일(%s) 고저=%.2f/%.2f 종가=%.2f MA%d=%.2f 추세=%v 목표가=%.2f",
-			entry.Symbol, todayOpen, prior[0].Date, prior[0].High, prior[0].Low, prior[0].Close, maWindow, mean(closes), trendOK, target)
-		setups[entry.Symbol] = simulator.Setup{Symbol: entry.Symbol, TargetPrice: target, TrendOK: trendOK}
-	}
-	return setups
-}
-
-// regularSessionOpen returns the open of the 1-minute bar that starts the
-// regular session. The still-forming daily bar can't be used: it already
-// includes NXT pre-market / US overnight and pre-market prints, while the
-// completed daily bar (what the backtest uses) covers the regular session only.
-func regularSessionOpen(ctx context.Context, client *tossapi.Client, symbol string, sessionStart time.Time) (float64, bool) {
-	candles, _, err := client.Candles(ctx, symbol, "1m", 5, "")
-	if err != nil {
-		return 0, false
-	}
-	for _, c := range candles {
-		ts, err := time.Parse(time.RFC3339, c.Timestamp)
-		if err != nil || !ts.Equal(sessionStart) {
-			continue
-		}
-		open, err := strconv.ParseFloat(c.OpenPrice, 64)
-		return open, err == nil && open > 0
-	}
-	return 0, false
-}
-
-func mean(xs []float64) float64 {
-	sum := 0.0
-	for _, x := range xs {
-		sum += x
-	}
-	return sum / float64(len(xs))
-}
-
 // historyObjectKey는 그날 마감 스냅샷을 영구 보관할 GCS 오브젝트 이름이다.
 // status.json은 매번 덮어써져서 하루만 지나도 전날 결과를 알 수 없었던
 // 문제(2026-09-28 분석 중 발견)를 고치기 위해 도입.
 func historyObjectKey(date, market string) string {
 	return fmt.Sprintf("history/%s-%s.json", date, market)
-}
-
-func pollWatchlist(ctx context.Context, client *tossapi.Client) []tradingloop.PriceObservation {
-	observations := make([]tradingloop.PriceObservation, 0, len(strategy.Watchlist))
-	for _, entry := range strategy.Watchlist {
-		price, err := client.Price(ctx, entry.Symbol)
-		if err != nil {
-			observations = append(observations, tradingloop.PriceObservation{Symbol: entry.Symbol, Err: err})
-			continue
-		}
-		last, err := strconv.ParseFloat(price.LastPrice, 64)
-		if err != nil {
-			observations = append(observations, tradingloop.PriceObservation{Symbol: entry.Symbol, Err: err})
-			continue
-		}
-		ts, err := time.Parse(time.RFC3339, price.Timestamp)
-		if err != nil {
-			observations = append(observations, tradingloop.PriceObservation{Symbol: entry.Symbol, Err: err})
-			continue
-		}
-		observations = append(observations, tradingloop.PriceObservation{Symbol: entry.Symbol, Price: last, Timestamp: ts})
-	}
-	return observations
 }
 
 func describeSkippedObservations(observations []tradingloop.PriceObservation, now time.Time, maxAge time.Duration) []string {
@@ -392,12 +316,13 @@ func appendRecentOrder(orders []snapshot.Order, o snapshot.Order, max int) []sna
 // it — shared by publishSnapshot (live status.json/status.html) and the
 // EOD history archive (historyObjectKey) so both reflect the exact same
 // state.
-func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order) snapshot.Snapshot {
+func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order, status *snapshot.ScreenerStatus) snapshot.Snapshot {
 	s := snapshot.Snapshot{
 		DailyLossLimitPct: 0.05,
 		KillSwitch:        snapshot.KillSwitchStatus{Halted: halted, Reason: reason},
 		RecentOrders:      recentOrders,
 		UpdatedAt:         time.Now(),
+		Screener:          status,
 	}
 	s.Seed = sim.State().Seed // 당일 시작 시드 — DailyLossProgress의 분모(SPEC.md 4.3)
 	if pos, ok := sim.Position(); ok {
@@ -419,8 +344,8 @@ func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossap
 	return s
 }
 
-func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order) {
-	s := buildSnapshot(ctx, sim, client, halted, reason, recentOrders)
+func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order, status *snapshot.ScreenerStatus) {
+	s := buildSnapshot(ctx, sim, client, halted, reason, recentOrders, status)
 	data, err := s.RenderJSON()
 	if err != nil {
 		log.Printf("스냅샷 JSON 생성 실패: %v", err)
