@@ -21,3 +21,20 @@ func ComputeDaySetup(todayOpen float64, yesterday DailyBar, closesEndingYesterda
 	trendOK = TrendFilterPasses(yesterday.Close, ma)
 	return targetPrice, trendOK, nil
 }
+
+// SplitBars separates bars (newest first) into today's still-forming bar, if
+// present, and the completed bars strictly before sessionDate. The candles
+// API includes today's partial bar as the first element during the session,
+// so callers must never treat bars[0] as "yesterday".
+func SplitBars(bars []DailyBar, sessionDate string) (today *DailyBar, prior []DailyBar) {
+	for i := range bars {
+		switch {
+		case bars[i].Date == sessionDate:
+			b := bars[i]
+			today = &b
+		case bars[i].Date < sessionDate:
+			prior = append(prior, bars[i])
+		}
+	}
+	return today, prior
+}

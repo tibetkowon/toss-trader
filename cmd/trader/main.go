@@ -140,7 +140,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		return err
 	}
 
-	setups := todaySetups(ctx, client)
+	setups := todaySetups(ctx, client, sessionStart.Format(dateLayout))
 
 	uploader := snapshot.NewGCSUploader(nil, os.Getenv("SNAPSHOT_BUCKET"))
 	var recentOrders []snapshot.Order
@@ -231,45 +231,72 @@ func loadOrStartSimulator(ctx context.Context, store *session.Store, cfg simulat
 // whose data can't be fetched or is incomplete is logged and skipped rather
 // than aborting the whole session — a transient failure on one of eight
 // symbols shouldn't take the other seven off watch for the day.
-func todaySetups(ctx context.Context, client *tossapi.Client) map[string]simulator.Setup {
+//
+// The candles API returns today's still-forming bar first, so "yesterday" and
+// the MA window are picked by date via strategy.SplitBars (2026-09-30: treating
+// candles[0] as yesterday made every target price collapse to ~today's open).
+func todaySetups(ctx context.Context, client *tossapi.Client, sessionDate string) map[string]simulator.Setup {
 	const k = 0.5
 	const maWindow = 5
 	setups := make(map[string]simulator.Setup, len(strategy.Watchlist))
 	for _, entry := range strategy.Watchlist {
-		candles, _, err := client.Candles(ctx, entry.Symbol, "1d", maWindow+1, "")
+		candles, _, err := client.Candles(ctx, entry.Symbol, "1d", maWindow+2, "")
 		if err != nil {
 			log.Printf("%s 일봉 조회 실패, 오늘 감시 대상에서 제외합니다: %v", entry.Symbol, err)
 			continue
 		}
-		if len(candles) < maWindow+1 {
-			log.Printf("%s 일봉 데이터 부족, 오늘 감시 대상에서 제외합니다", entry.Symbol)
+		bars := make([]strategy.DailyBar, 0, len(candles))
+		for _, c := range candles {
+			if len(c.Timestamp) < len(dateLayout) {
+				continue
+			}
+			open, _ := strconv.ParseFloat(c.OpenPrice, 64)
+			high, _ := strconv.ParseFloat(c.HighPrice, 64)
+			low, _ := strconv.ParseFloat(c.LowPrice, 64)
+			closePrice, _ := strconv.ParseFloat(c.ClosePrice, 64)
+			bars = append(bars, strategy.DailyBar{Date: c.Timestamp[:len(dateLayout)], Open: open, High: high, Low: low, Close: closePrice})
+		}
+		todayBar, prior := strategy.SplitBars(bars, sessionDate)
+		if len(prior) < maWindow {
+			log.Printf("%s 일봉 데이터 부족(어제 이전 %d개), 오늘 감시 대상에서 제외합니다", entry.Symbol, len(prior))
 			continue
 		}
-		// 최신순으로 오므로 candles[0]=어제, candles[1..maWindow]=그 이전 5일.
-		yesterday := candles[0]
-		prevHigh, _ := strconv.ParseFloat(yesterday.HighPrice, 64)
-		prevLow, _ := strconv.ParseFloat(yesterday.LowPrice, 64)
-		prevClose, _ := strconv.ParseFloat(yesterday.ClosePrice, 64)
 		closes := make([]float64, maWindow)
 		for i := 0; i < maWindow; i++ {
-			c, _ := strconv.ParseFloat(candles[i].ClosePrice, 64)
-			closes[i] = c
+			closes[i] = prior[i].Close
 		}
-		todayPrice, err := client.Price(ctx, entry.Symbol)
-		if err != nil {
-			log.Printf("%s 시가 조회 실패, 오늘 감시 대상에서 제외합니다: %v", entry.Symbol, err)
-			continue
+
+		var todayOpen float64
+		if todayBar != nil {
+			todayOpen = todayBar.Open
+		} else {
+			price, err := client.Price(ctx, entry.Symbol)
+			if err != nil {
+				log.Printf("%s 오늘 일봉과 시가 조회가 모두 실패해 오늘 감시 대상에서 제외합니다: %v", entry.Symbol, err)
+				continue
+			}
+			todayOpen, _ = strconv.ParseFloat(price.LastPrice, 64)
+			log.Printf("%s 오늘 일봉이 아직 없어 첫 현재가(%.2f)를 시가로 대신 사용합니다", entry.Symbol, todayOpen)
 		}
-		todayOpen, _ := strconv.ParseFloat(todayPrice.LastPrice, 64) // 장 시작 직후 첫 조회를 시가 근사치로 사용
-		bar := strategy.DailyBar{Close: prevClose, High: prevHigh, Low: prevLow}
-		target, trendOK, err := strategy.ComputeDaySetup(todayOpen, bar, closes, k)
+
+		target, trendOK, err := strategy.ComputeDaySetup(todayOpen, prior[0], closes, k)
 		if err != nil {
 			log.Printf("%s 설정 계산 실패, 오늘 감시 대상에서 제외합니다: %v", entry.Symbol, err)
 			continue
 		}
+		log.Printf("%s 셋업: 시가=%.2f 전일(%s) 고저=%.2f/%.2f 종가=%.2f MA%d=%.2f 추세=%v 목표가=%.2f",
+			entry.Symbol, todayOpen, prior[0].Date, prior[0].High, prior[0].Low, prior[0].Close, maWindow, mean(closes), trendOK, target)
 		setups[entry.Symbol] = simulator.Setup{Symbol: entry.Symbol, TargetPrice: target, TrendOK: trendOK}
 	}
 	return setups
+}
+
+func mean(xs []float64) float64 {
+	sum := 0.0
+	for _, x := range xs {
+		sum += x
+	}
+	return sum / float64(len(xs))
 }
 
 // historyObjectKey는 그날 마감 스냅샷을 영구 보관할 GCS 오브젝트 이름이다.
