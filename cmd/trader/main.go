@@ -140,7 +140,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		return err
 	}
 
-	setups := todaySetups(ctx, client, sessionStart.Format(dateLayout))
+	setups := todaySetups(ctx, client, sessionStart)
 
 	uploader := snapshot.NewGCSUploader(nil, os.Getenv("SNAPSHOT_BUCKET"))
 	var recentOrders []snapshot.Order
@@ -235,7 +235,8 @@ func loadOrStartSimulator(ctx context.Context, store *session.Store, cfg simulat
 // The candles API returns today's still-forming bar first, so "yesterday" and
 // the MA window are picked by date via strategy.SplitBars (2026-09-30: treating
 // candles[0] as yesterday made every target price collapse to ~today's open).
-func todaySetups(ctx context.Context, client *tossapi.Client, sessionDate string) map[string]simulator.Setup {
+func todaySetups(ctx context.Context, client *tossapi.Client, sessionStart time.Time) map[string]simulator.Setup {
+	sessionDate := sessionStart.Format(dateLayout)
 	const k = 0.5
 	const maWindow = 5
 	setups := make(map[string]simulator.Setup, len(strategy.Watchlist))
@@ -256,7 +257,7 @@ func todaySetups(ctx context.Context, client *tossapi.Client, sessionDate string
 			closePrice, _ := strconv.ParseFloat(c.ClosePrice, 64)
 			bars = append(bars, strategy.DailyBar{Date: c.Timestamp[:len(dateLayout)], Open: open, High: high, Low: low, Close: closePrice})
 		}
-		todayBar, prior := strategy.SplitBars(bars, sessionDate)
+		_, prior := strategy.SplitBars(bars, sessionDate)
 		if len(prior) < maWindow {
 			log.Printf("%s 일봉 데이터 부족(어제 이전 %d개), 오늘 감시 대상에서 제외합니다", entry.Symbol, len(prior))
 			continue
@@ -266,17 +267,15 @@ func todaySetups(ctx context.Context, client *tossapi.Client, sessionDate string
 			closes[i] = prior[i].Close
 		}
 
-		var todayOpen float64
-		if todayBar != nil {
-			todayOpen = todayBar.Open
-		} else {
+		todayOpen, ok := regularSessionOpen(ctx, client, entry.Symbol, sessionStart)
+		if !ok {
 			price, err := client.Price(ctx, entry.Symbol)
 			if err != nil {
-				log.Printf("%s 오늘 일봉과 시가 조회가 모두 실패해 오늘 감시 대상에서 제외합니다: %v", entry.Symbol, err)
+				log.Printf("%s 정규장 시가와 현재가 조회가 모두 실패해 오늘 감시 대상에서 제외합니다: %v", entry.Symbol, err)
 				continue
 			}
 			todayOpen, _ = strconv.ParseFloat(price.LastPrice, 64)
-			log.Printf("%s 오늘 일봉이 아직 없어 첫 현재가(%.2f)를 시가로 대신 사용합니다", entry.Symbol, todayOpen)
+			log.Printf("%s 정규장 첫 1분봉을 찾지 못해 현재가(%.2f)를 시가로 대신 사용합니다", entry.Symbol, todayOpen)
 		}
 
 		target, trendOK, err := strategy.ComputeDaySetup(todayOpen, prior[0], closes, k)
@@ -289,6 +288,26 @@ func todaySetups(ctx context.Context, client *tossapi.Client, sessionDate string
 		setups[entry.Symbol] = simulator.Setup{Symbol: entry.Symbol, TargetPrice: target, TrendOK: trendOK}
 	}
 	return setups
+}
+
+// regularSessionOpen returns the open of the 1-minute bar that starts the
+// regular session. The still-forming daily bar can't be used: it already
+// includes NXT pre-market / US overnight and pre-market prints, while the
+// completed daily bar (what the backtest uses) covers the regular session only.
+func regularSessionOpen(ctx context.Context, client *tossapi.Client, symbol string, sessionStart time.Time) (float64, bool) {
+	candles, _, err := client.Candles(ctx, symbol, "1m", 5, "")
+	if err != nil {
+		return 0, false
+	}
+	for _, c := range candles {
+		ts, err := time.Parse(time.RFC3339, c.Timestamp)
+		if err != nil || !ts.Equal(sessionStart) {
+			continue
+		}
+		open, err := strconv.ParseFloat(c.OpenPrice, 64)
+		return open, err == nil && open > 0
+	}
+	return 0, false
 }
 
 func mean(xs []float64) float64 {
