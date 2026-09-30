@@ -1,5 +1,5 @@
 // Command backtest fetches real historical candles for the fixed watchlist
-// (internal/strategy.Watchlist) and replays them through internal/backtest's
+// (cmd/backtest/watchlist.go의 Watchlist) and replays them through internal/backtest's
 // simulator-backed engine, reporting max drawdown against SPEC.md 6.2's
 // 10%-of-seed pass criterion.
 package main
@@ -47,8 +47,8 @@ func main() {
 	commissionRate := mustCommissionRate(ctx, client, accountSeq)
 	log.Printf("KR 수수료율: %.5f", commissionRate)
 
-	symbols := make([]string, len(strategy.Watchlist))
-	for i, e := range strategy.Watchlist {
+	symbols := make([]string, len(Watchlist))
+	for i, e := range Watchlist {
 		symbols[i] = e.Symbol
 	}
 

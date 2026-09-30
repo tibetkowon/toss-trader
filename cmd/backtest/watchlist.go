@@ -1,6 +1,6 @@
-// Package strategy holds the fixed 1단계 워치리스트 and (eventually) the
-// volatility-breakout strategy logic described in SPEC.md 3.
-package strategy
+// 옛 고정 워치리스트(2026-09-27 선정, SPEC.md 3.3 v15에서 폐기). 6.2 백테스트 결과의 근거이자
+// cmd/backtest의 기본 종목 목록으로만 보존합니다. 라이브 거래는 internal/screener를 씁니다.
+package main
 
 // WatchlistEntry is one fixed-watchlist symbol with the metadata that
 // justified including it, so the list is auditable without re-running the
