@@ -2,6 +2,7 @@ package tossapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -402,6 +403,34 @@ func TestMarketCalendarInvalidMarket(t *testing.T) {
 			})
 			if _, err := client.MarketCalendar(context.Background(), market); err == nil {
 				t.Fatal("잘못된 market을 허용했습니다")
+			}
+		})
+	}
+}
+
+func TestStockIsLeveraged(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"필드 없음", `{"symbol":"A"}`, false},
+		{"null", `{"leverageFactor":null}`, false},
+		{"빈 문자열", `{"leverageFactor":""}`, false},
+		{"문자열 1", `{"leverageFactor":"1"}`, false},
+		{"숫자 1", `{"leverageFactor":1}`, false},
+		{"숫자 1.0", `{"leverageFactor":1.0}`, false},
+		{"문자열 3배", `{"leverageFactor":"3"}`, true},
+		{"숫자 3배", `{"leverageFactor":3}`, true},
+		{"인버스 -1", `{"leverageFactor":"-1"}`, true},
+		{"해석 불가 문자열", `{"leverageFactor":"x2"}`, true},
+		{"원문 없음", ``, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := Stock{Raw: json.RawMessage(c.raw)}
+			if got := s.IsLeveraged(); got != c.want {
+				t.Errorf("IsLeveraged(%s) = %v, 기대 %v", c.raw, got, c.want)
 			}
 		})
 	}

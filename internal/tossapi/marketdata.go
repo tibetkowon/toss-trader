@@ -111,6 +111,26 @@ type Stock struct {
 	Raw                json.RawMessage     `json:"-"`
 }
 
+// IsLeveraged는 레버리지/인버스 상품 여부를 원문의 leverageFactor로 판단합니다.
+// 값이 문자열이든 숫자든 받아들이고, 해석할 수 없는 값은 보수적으로 true입니다.
+func (s Stock) IsLeveraged() bool {
+	var probe struct {
+		LeverageFactor json.RawMessage `json:"leverageFactor"`
+	}
+	if err := json.Unmarshal(s.Raw, &probe); err != nil {
+		return false
+	}
+	v := strings.Trim(strings.TrimSpace(string(probe.LeverageFactor)), `"`)
+	if v == "" || v == "null" {
+		return false
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return true
+	}
+	return n != 1
+}
+
 // Commission은 시장별 수수료율과 적용 기간을 담습니다.
 // 2026-09-27 실API로 확인: startDate/endDate가 있는 시장별 요율 이력이며,
 // 한국 증권거래세 등 commissionRate에 포함되지 않는 별도 비용이 있을 수 있어
