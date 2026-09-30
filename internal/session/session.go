@@ -39,6 +39,17 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS screener_eval (
+		trading_date TEXT NOT NULL,
+		market TEXT NOT NULL,
+		symbol TEXT NOT NULL,
+		eval_json TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY (trading_date, market, symbol)
+	)`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
