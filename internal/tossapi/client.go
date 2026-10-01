@@ -87,12 +87,41 @@ type RateLimit struct {
 }
 
 // HTTPError에는 인증정보가 포함될 수 있는 응답 본문을 저장하지 않습니다.
+// 429일 때만 레이트리밋 헤더 원문을 함께 담아, 실제 한도를 로그로 실측할 수 있게 합니다.
 type HTTPError struct {
 	StatusCode int
+	Group      string
+	Limit      string
+	Remaining  string
+	Reset      string
+	RetryAfter string
 }
 
 func (e *HTTPError) Error() string {
-	return fmt.Sprintf("API HTTP 상태 %d", e.StatusCode)
+	if e.StatusCode != http.StatusTooManyRequests {
+		return fmt.Sprintf("API HTTP 상태 %d", e.StatusCode)
+	}
+	return fmt.Sprintf("API HTTP 상태 429 (group=%s limit=%s remaining=%s reset=%s retry-after=%s)",
+		dash(e.Group), dash(e.Limit), dash(e.Remaining), dash(e.Reset), dash(e.RetryAfter))
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+func newHTTPError(group string, resp *http.Response) *HTTPError {
+	e := &HTTPError{StatusCode: resp.StatusCode}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		e.Group = group
+		e.Limit = resp.Header.Get("X-RateLimit-Limit")
+		e.Remaining = resp.Header.Get("X-RateLimit-Remaining")
+		e.Reset = resp.Header.Get("X-RateLimit-Reset")
+		e.RetryAfter = resp.Header.Get("Retry-After")
+	}
+	return e
 }
 
 // New는 시작 시 시크릿을 읽어 메모리에만 보관합니다.
@@ -346,7 +375,7 @@ func (c *Client) request(ctx context.Context, group string, makeRequest func() (
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, &HTTPError{StatusCode: resp.StatusCode}
+			return nil, newHTTPError(group, resp)
 		}
 		if readErr != nil || len(body) > 4<<20 {
 			return nil, errors.New("API 응답 읽기 실패 또는 크기 초과")

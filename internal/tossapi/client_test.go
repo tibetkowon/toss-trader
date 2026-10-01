@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -360,5 +361,31 @@ func Test429WithoutTimingDoesNotRetry(t *testing.T) {
 	})
 	if _, err := client.Token(context.Background()); err == nil || calls.Load() != 1 {
 		t.Fatalf("잘못된 제한 헤더: calls=%d err=%v", calls.Load(), err)
+	}
+}
+
+func Test429ErrorCarriesRateLimitHeaders(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "10")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("Retry-After", "invalid")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	_, err := client.Token(context.Background())
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != 429 {
+		t.Fatalf("429 오류가 아닙니다: %v", err)
+	}
+	msg := err.Error()
+	for _, want := range []string{"429", "limit=10", "remaining=0", "retry-after=invalid"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("오류 메시지에 %q가 없습니다: %s", want, msg)
+		}
+	}
+}
+
+func TestNon429ErrorMessageStaysPlain(t *testing.T) {
+	if got := (&HTTPError{StatusCode: 503}).Error(); got != "API HTTP 상태 503" {
+		t.Fatalf("메시지: %q", got)
 	}
 }

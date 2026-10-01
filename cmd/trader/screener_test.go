@@ -118,7 +118,7 @@ func TestPollPricesKeepsOrderAndReportsErrors(t *testing.T) {
 		"C": {LastPrice: "abc", Timestamp: "2026-10-01T01:00:00Z"},
 		"D": {LastPrice: "100", Timestamp: "not-a-time"},
 	}
-	obs := pollPrices(context.Background(), src, []string{"A", "B", "C", "D"})
+	obs := pollPrices(context.Background(), src, []string{"A", "B", "C", "D"}, "")
 	if len(obs) != 4 {
 		t.Fatalf("관찰값 %d개", len(obs))
 	}
@@ -193,5 +193,46 @@ func TestDescribeUpdate(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("로그에 %q가 없습니다:\n%s", want, joined)
 		}
+	}
+}
+
+type flakyPrices struct {
+	failsLeft map[string]int
+	calls     map[string]int
+}
+
+func (f *flakyPrices) Price(_ context.Context, symbol string) (*tossapi.Price, error) {
+	f.calls[symbol]++
+	if f.failsLeft[symbol] > 0 {
+		f.failsLeft[symbol]--
+		return nil, errors.New("429")
+	}
+	return &tossapi.Price{LastPrice: "100", Timestamp: "2026-10-01T01:00:00Z"}, nil
+}
+
+func TestPollPricesRetriesHeldSymbolOnly(t *testing.T) {
+	old := heldRetryDelay
+	heldRetryDelay = 0
+	defer func() { heldRetryDelay = old }()
+
+	src := &flakyPrices{failsLeft: map[string]int{"H": 2, "X": 1}, calls: map[string]int{}}
+	obs := pollPrices(context.Background(), src, []string{"H", "X"}, "H")
+	if obs[0].Err != nil || obs[0].Price != 100 || src.calls["H"] != 3 {
+		t.Errorf("보유 종목은 재시도로 복구되어야 합니다: %+v calls=%d", obs[0], src.calls["H"])
+	}
+	if obs[1].Err == nil || src.calls["X"] != 1 {
+		t.Errorf("보유하지 않은 종목은 재시도하지 않습니다: %+v calls=%d", obs[1], src.calls["X"])
+	}
+}
+
+func TestPollPricesHeldRetryGivesUp(t *testing.T) {
+	old := heldRetryDelay
+	heldRetryDelay = 0
+	defer func() { heldRetryDelay = old }()
+
+	src := &flakyPrices{failsLeft: map[string]int{"H": 99}, calls: map[string]int{}}
+	obs := pollPrices(context.Background(), src, []string{"H"}, "H")
+	if obs[0].Err == nil || src.calls["H"] != 1+heldRetries {
+		t.Errorf("재시도 한도 후 오류로 보고해야 합니다: %+v calls=%d", obs[0], src.calls["H"])
 	}
 }

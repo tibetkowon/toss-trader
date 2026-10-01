@@ -114,27 +114,43 @@ type priceSource interface {
 	Price(ctx context.Context, symbol string) (*tossapi.Price, error)
 }
 
-func pollPrices(ctx context.Context, src priceSource, symbols []string) []tradingloop.PriceObservation {
+// 보유 종목은 손절 감시가 걸려 있어 한 틱이라도 못 보면 안 되므로, 실패 시 짧게 재시도합니다.
+const heldRetries = 2
+
+var heldRetryDelay = 300 * time.Millisecond
+
+func pollPrices(ctx context.Context, src priceSource, symbols []string, held string) []tradingloop.PriceObservation {
 	observations := make([]tradingloop.PriceObservation, 0, len(symbols))
 	for _, symbol := range symbols {
-		price, err := src.Price(ctx, symbol)
-		if err != nil {
-			observations = append(observations, tradingloop.PriceObservation{Symbol: symbol, Err: err})
-			continue
+		obs := fetchObservation(ctx, src, symbol)
+		for attempt := 0; symbol == held && obs.Err != nil && attempt < heldRetries; attempt++ {
+			select {
+			case <-ctx.Done():
+				attempt = heldRetries
+				continue
+			case <-time.After(heldRetryDelay):
+			}
+			obs = fetchObservation(ctx, src, symbol)
 		}
-		last, err := strconv.ParseFloat(price.LastPrice, 64)
-		if err != nil {
-			observations = append(observations, tradingloop.PriceObservation{Symbol: symbol, Err: err})
-			continue
-		}
-		ts, err := time.Parse(time.RFC3339, price.Timestamp)
-		if err != nil {
-			observations = append(observations, tradingloop.PriceObservation{Symbol: symbol, Err: err})
-			continue
-		}
-		observations = append(observations, tradingloop.PriceObservation{Symbol: symbol, Price: last, Timestamp: ts})
+		observations = append(observations, obs)
 	}
 	return observations
+}
+
+func fetchObservation(ctx context.Context, src priceSource, symbol string) tradingloop.PriceObservation {
+	price, err := src.Price(ctx, symbol)
+	if err != nil {
+		return tradingloop.PriceObservation{Symbol: symbol, Err: err}
+	}
+	last, err := strconv.ParseFloat(price.LastPrice, 64)
+	if err != nil {
+		return tradingloop.PriceObservation{Symbol: symbol, Err: err}
+	}
+	ts, err := time.Parse(time.RFC3339, price.Timestamp)
+	if err != nil {
+		return tradingloop.PriceObservation{Symbol: symbol, Err: err}
+	}
+	return tradingloop.PriceObservation{Symbol: symbol, Price: last, Timestamp: ts}
 }
 
 func restoreEvals(ctx context.Context, store *session.Store, ev *screener.Evaluator, date, market string) (restored, skipped int, err error) {

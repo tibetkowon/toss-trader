@@ -189,7 +189,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		}
 		symbols := pollSymbols(gate.Active(), held)
 		setups := setupsFor(gate.Setup, symbols, held)
-		observations := pollPrices(ctx, client, symbols)
+		observations := pollPrices(ctx, client, symbols, held)
 		for _, line := range describeSkippedObservations(observations, now, staleness) {
 			log.Println(line)
 		}
