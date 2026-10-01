@@ -28,6 +28,25 @@ func TestBuildEquityCurve(t *testing.T) {
 	}
 }
 
+func TestBuildEquityCurveStartsAtSeed(t *testing.T) {
+	records := []session.DailyRecord{
+		{Date: "2026-09-28", Market: "KR", State: simulator.State{Seed: 100000, Cash: 97441}},
+		{Date: "2026-09-29", Market: "KR", State: simulator.State{Seed: 97441, Cash: 98225}},
+	}
+	got := BuildEquityCurve(records)
+	want := []EquityPoint{
+		{Date: StartLabel, Equity: 100000},
+		{Date: "2026-09-28", Equity: 97441},
+		{Date: "2026-09-29", Equity: 98225},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("자산 곡선 불일치: got %+v want %+v", got, want)
+	}
+	if dd := MaxDrawdown(got); math.Abs(dd-0.02559) > 1e-4 {
+		t.Fatalf("첫날 손실도 낙폭으로 잡혀야 합니다: %v", dd)
+	}
+}
+
 func TestBuildEquityCurveEmpty(t *testing.T) {
 	if got := BuildEquityCurve(nil); len(got) != 0 {
 		t.Fatalf("빈 기록의 자산 곡선이 비어 있지 않습니다: %+v", got)
