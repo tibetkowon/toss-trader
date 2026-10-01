@@ -92,6 +92,8 @@ type Simulator struct {
 	stoppedOutToday   map[string]bool
 	consecutiveLosses int
 	realizedPnLToday  float64
+	currency          string
+	fxRate            float64
 }
 
 // New creates a Simulator for one trading day. startingCash is SPEC.md
@@ -143,6 +145,18 @@ type State struct {
 	StoppedOutSymbols []string
 	ConsecutiveLosses int
 	RealizedPnLToday  float64
+	// Currency/FXRate는 이 세션의 금액 단위와, 세션 내내 고정해 쓰는 단위당 원화 환율입니다.
+	// 비어 있으면(옛 저장분) 원화로 취급합니다.
+	Currency string  `json:",omitempty"`
+	FXRate   float64 `json:",omitempty"`
+}
+
+// KRWRate는 이 상태의 금액 한 단위가 몇 원인지 돌려줍니다.
+func (st State) KRWRate() float64 {
+	if st.FXRate > 0 {
+		return st.FXRate
+	}
+	return 1
 }
 
 // State captures the current state for persistence.
@@ -159,7 +173,14 @@ func (s *Simulator) State() State {
 		StoppedOutSymbols: s.StoppedOutSymbols(),
 		ConsecutiveLosses: s.consecutiveLosses,
 		RealizedPnLToday:  s.RealizedPnLToday(),
+		Currency:          s.currency,
+		FXRate:            s.fxRate,
 	}
+}
+
+// SetCurrency records the session's currency and fixed KRW rate so they persist with State.
+func (s *Simulator) SetCurrency(currency string, fxRate float64) {
+	s.currency, s.fxRate = currency, fxRate
 }
 
 // Restore reconstructs a Simulator from a previously saved State — the
@@ -182,6 +203,8 @@ func Restore(cfg Config, state State) *Simulator {
 		stoppedOutToday:   stoppedOutToday,
 		consecutiveLosses: state.ConsecutiveLosses,
 		realizedPnLToday:  state.RealizedPnLToday,
+		currency:          state.Currency,
+		fxRate:            state.FXRate,
 	}
 }
 

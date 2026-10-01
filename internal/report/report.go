@@ -5,7 +5,8 @@ package report
 
 import "github.com/tibetkowon/toss-trader/internal/session"
 
-// EquityPoint is one day's ending account equity for one market.
+// EquityPoint is one day's ending account equity for one market, in KRW
+// (USD sessions are converted at the session's fixed rate).
 type EquityPoint struct {
 	Date   string
 	Equity float64
@@ -22,14 +23,14 @@ const StartLabel = "시작"
 func BuildEquityCurve(records []session.DailyRecord) []EquityPoint {
 	points := make([]EquityPoint, 0, len(records)+1)
 	if len(records) > 0 && records[0].State.Seed > 0 {
-		points = append(points, EquityPoint{Date: StartLabel, Equity: records[0].State.Seed})
+		points = append(points, EquityPoint{Date: StartLabel, Equity: records[0].State.Seed * records[0].State.KRWRate()})
 	}
 	for _, r := range records {
 		equity := r.State.Cash
 		if r.State.Position != nil {
 			equity += r.State.Position.CostBasis
 		}
-		points = append(points, EquityPoint{Date: r.Date, Equity: equity})
+		points = append(points, EquityPoint{Date: r.Date, Equity: equity * r.State.KRWRate()})
 	}
 	return points
 }

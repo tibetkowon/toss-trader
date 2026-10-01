@@ -39,6 +39,8 @@ type Snapshot struct {
 	Positions         []Position       `json:"positions"`
 	DailyPnL          float64          `json:"daily_pnl"`
 	Seed              float64          `json:"seed"`
+	Currency          string           `json:"currency,omitempty"`
+	FXRate            float64          `json:"fx_rate,omitempty"` // 세션 내내 고정한 단위당 원화 환율
 	DailyLossLimitPct float64          `json:"daily_loss_limit_pct"`
 	KillSwitch        KillSwitchStatus `json:"kill_switch"`
 	RecentOrders      []Order          `json:"recent_orders"`
@@ -86,6 +88,7 @@ var dashboard = template.Must(template.New("dashboard").Parse(`<!doctype html>
 <body>
 <h1>거래 상태</h1>
 <p>마지막 갱신 시각: {{.UpdatedAt.Format "2006-01-02T15:04:05Z07:00"}}</p>
+{{if .Currency}}<p>금액 단위: {{.Currency}}{{if gt .FXRate 0.0}} (환율 {{printf "%.2f" .FXRate}}원){{end}}</p>{{end}}
 <p>당일 실현+평가 손익(비용 포함): {{.DailyPnL}}</p>
 <p>일일 손실 한도 대비 진행률: {{printf "%.2f" .LossPercent}}%</p>
 <p>킬스위치: {{if .KillSwitch.Halted}}중단{{else}}정상{{end}} / {{.KillSwitch.Reason}}</p>

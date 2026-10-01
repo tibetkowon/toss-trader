@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"math"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/tibetkowon/toss-trader/internal/session"
 	"github.com/tibetkowon/toss-trader/internal/simulator"
 	"github.com/tibetkowon/toss-trader/internal/snapshot"
 	"github.com/tibetkowon/toss-trader/internal/tradingloop"
@@ -126,5 +130,55 @@ func TestToOrderBoughtIsBuySide(t *testing.T) {
 	got := toOrder(action, at)
 	if got.Side != "BUY" {
 		t.Errorf("Side = %q, want BUY", got.Side)
+	}
+}
+
+func TestLoadOrStartSimulatorConvertsKRWPoolToUSDForUS(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.Open(filepath.Join(t.TempDir(), "session.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Save(ctx, "2026-09-30", "KR", simulator.State{Cash: 98950}); err != nil {
+		t.Fatal(err)
+	}
+	rate := func(context.Context) (float64, error) { return 1400, nil }
+
+	sim, err := loadOrStartSimulator(ctx, store, simulator.Config{}, "2026-10-01", "US", rate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := sim.State()
+	if st.Currency != "USD" || st.FXRate != 1400 || math.Abs(st.Seed-98950.0/1400) > 1e-9 || st.Cash != st.Seed {
+		t.Errorf("US 세션 시작 상태: %+v", st)
+	}
+
+	// 같은 날 다시 시작하면 환율을 다시 묻지 않고 저장된 상태를 그대로 복구한다.
+	if err := store.Save(ctx, "2026-10-01", "US", st); err != nil {
+		t.Fatal(err)
+	}
+	failing := func(context.Context) (float64, error) { return 0, errors.New("환율 장애") }
+	restored, err := loadOrStartSimulator(ctx, store, simulator.Config{}, "2026-10-01", "US", failing)
+	if err != nil || restored.State().FXRate != 1400 {
+		t.Fatalf("복구: %+v err=%v", restored.State(), err)
+	}
+
+	// KR은 원화 그대로, US 세션 이후엔 달러 잔고를 고정 환율로 되돌려 이어받는다.
+	kr, err := loadOrStartSimulator(ctx, store, simulator.Config{}, "2026-10-02", "KR", failing)
+	if err != nil || math.Abs(kr.State().Seed-98950) > 1e-6 || kr.State().Currency != "KRW" {
+		t.Fatalf("KR 시작 상태: %+v err=%v", kr.State(), err)
+	}
+}
+
+func TestLoadOrStartSimulatorRefusesUSWithoutRate(t *testing.T) {
+	store, err := session.Open(filepath.Join(t.TempDir(), "session.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	failing := func(context.Context) (float64, error) { return 0, errors.New("환율 장애") }
+	if _, err := loadOrStartSimulator(context.Background(), store, simulator.Config{}, "2026-10-01", "US", failing); err == nil {
+		t.Fatal("환율 없이 US 세션을 시작했습니다")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -388,4 +389,32 @@ func (c *Client) MarketCalendar(ctx context.Context, market string) (*MarketCale
 	}
 	result.Raw = append(json.RawMessage(nil), body...)
 	return &result, nil
+}
+
+// ExchangeRate는 /exchange-rate 응답입니다. 금액 필드는 다른 API처럼 JSON 문자열입니다.
+type ExchangeRate struct {
+	Rate       string `json:"rate"`
+	MidRate    string `json:"midRate"`
+	ValidFrom  string `json:"validFrom"`
+	ValidUntil string `json:"validUntil"`
+}
+
+// USDKRWRate는 USD 1달러당 원화 환율을 돌려줍니다. 매매 기준율이 아니라 중간환율(midRate)을
+// 우선 쓰고, 없으면 rate로 대체합니다.
+func (c *Client) USDKRWRate(ctx context.Context) (float64, error) {
+	query := url.Values{"baseCurrency": {"USD"}, "quoteCurrency": {"KRW"}}
+	body, err := c.get(ctx, "EXCHANGE_RATE", "/api/v1/exchange-rate?"+query.Encode(), "")
+	if err != nil {
+		return 0, err
+	}
+	var r ExchangeRate
+	if err := json.Unmarshal(unwrapData(body), &r); err != nil {
+		return 0, errors.New("잘못된 환율 응답")
+	}
+	for _, v := range []string{r.MidRate, r.Rate} {
+		if rate, err := strconv.ParseFloat(v, 64); err == nil && rate > 0 && !math.IsInf(rate, 0) {
+			return rate, nil
+		}
+	}
+	return 0, errors.New("환율 응답에 유효한 값이 없습니다")
 }

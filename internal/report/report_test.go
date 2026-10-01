@@ -85,3 +85,17 @@ func TestMaxDrawdown(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildEquityCurveConvertsUSDSessionsToKRW(t *testing.T) {
+	records := []session.DailyRecord{
+		{Date: "2026-10-01", Market: "US", State: simulator.State{Seed: 70, Cash: 71, Currency: "USD", FXRate: 1400}},
+	}
+	got := BuildEquityCurve(records)
+	want := []EquityPoint{
+		{Date: StartLabel, Equity: 98000},
+		{Date: "2026-10-01", Equity: 99400},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v want %+v", got, want)
+	}
+}

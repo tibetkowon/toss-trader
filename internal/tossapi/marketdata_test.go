@@ -475,3 +475,33 @@ func TestPricesRejectsBadInput(t *testing.T) {
 		}
 	}
 }
+
+func TestUSDKRWRate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want float64
+		ok   bool
+	}{
+		"mid rate preferred": {`{"result":{"rate":"1405.5","midRate":"1400.25","validFrom":"a","validUntil":"b"}}`, 1400.25, true},
+		"falls back to rate": {`{"result":{"rate":"1405.5","midRate":null}}`, 1405.5, true},
+		"no usable value":    {`{"result":{"rate":"0","midRate":"abc"}}`, 0, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/oauth2/token" {
+					writeToken(w)
+					return
+				}
+				q := r.URL.Query()
+				if r.URL.Path != "/api/v1/exchange-rate" || q.Get("baseCurrency") != "USD" || q.Get("quoteCurrency") != "KRW" {
+					t.Errorf("요청 불일치: %s", r.URL)
+				}
+				fmt.Fprint(w, tc.body)
+			})
+			got, err := client.USDKRWRate(context.Background())
+			if (err == nil) != tc.ok || got != tc.want {
+				t.Fatalf("got=%v err=%v", got, err)
+			}
+		})
+	}
+}

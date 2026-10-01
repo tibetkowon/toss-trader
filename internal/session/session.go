@@ -72,24 +72,33 @@ func (s *Store) Save(ctx context.Context, date, market string, state simulator.S
 	return err
 }
 
-// LatestCash returns the ending cash from the most recently saved day for
-// market, if any — used to seed a brand new trading day with the prior
-// day's compounded balance (SPEC.md 4.1) rather than always resetting to a
-// fixed starting amount.
-func (s *Store) LatestCash(ctx context.Context, market string) (cash float64, ok bool, err error) {
-	row := s.db.QueryRowContext(ctx, `SELECT state_json FROM session_state WHERE market = ? ORDER BY trading_date DESC LIMIT 1`, market)
-	var data string
-	if err := row.Scan(&data); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, false, nil
+// LatestKRWCash returns the account's cash in KRW as of the most recently saved
+// session of any market — KR and US sessions share one KRW account, so a new
+// session starts from whatever the previous one (either market) ended with
+// (SPEC.md 4.1). US sessions run in USD at a fixed rate, converted back here.
+// US rows saved before currency tracking existed hold KRW-seeded numbers
+// mixed with USD prices, so they are skipped.
+func (s *Store) LatestKRWCash(ctx context.Context) (cash float64, ok bool, err error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT market, state_json FROM session_state ORDER BY trading_date DESC, updated_at DESC, rowid DESC`)
+	if err != nil {
+		return 0, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var market, data string
+		if err := rows.Scan(&market, &data); err != nil {
+			return 0, false, err
 		}
-		return 0, false, err
+		var state simulator.State
+		if err := json.Unmarshal([]byte(data), &state); err != nil {
+			return 0, false, err
+		}
+		if market == "US" && state.Currency == "" {
+			continue
+		}
+		return state.Cash * state.KRWRate(), true, nil
 	}
-	var state simulator.State
-	if err := json.Unmarshal([]byte(data), &state); err != nil {
-		return 0, false, err
-	}
-	return state.Cash, true, nil
+	return 0, false, rows.Err()
 }
 
 // Load retrieves the saved state for (date, market). ok is false when

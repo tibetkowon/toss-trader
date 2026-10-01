@@ -157,7 +157,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	today := time.Now().Format(dateLayout)
 	cfg := simulator.Config{StopLossPct: 0.02, DailyLossLimitPct: 0.05, CommissionRate: commissionRate}
 
-	sim, err := loadOrStartSimulator(ctx, store, cfg, today, market)
+	sim, err := loadOrStartSimulator(ctx, store, cfg, today, market, client.USDKRWRate)
 	if err != nil {
 		return err
 	}
@@ -247,22 +247,43 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	return nil
 }
 
-func loadOrStartSimulator(ctx context.Context, store *session.Store, cfg simulator.Config, today, market string) (*simulator.Simulator, error) {
+// loadOrStartSimulator는 오늘 세션을 복구하거나 새로 시작합니다. KR/US는 하나의 원화 계좌를
+// 공유하므로 새 세션의 시작 현금은 직전 세션(어느 시장이든)의 원화 잔고이며, US는 시작 시점
+// 환율로 달러로 바꿔 세션 내내 같은 환율로 운용합니다(환차손익이 전략 성과에 섞이지 않게).
+func loadOrStartSimulator(ctx context.Context, store *session.Store, cfg simulator.Config, today, market string, usdKRW func(context.Context) (float64, error)) (*simulator.Simulator, error) {
 	if state, ok, err := store.Load(ctx, today, market); err != nil {
 		return nil, err
 	} else if ok {
-		log.Printf("기존 세션 상태를 복구했습니다: cash=%.0f", state.Cash)
+		log.Printf("기존 세션 상태를 복구했습니다: cash=%.2f %s", state.Cash, currencyLabel(state))
 		return simulator.Restore(cfg, state), nil
 	}
 
-	startingCash := paperSeed()
-	if cash, ok, err := store.LatestCash(ctx, market); err != nil {
+	krw := paperSeed()
+	if cash, ok, err := store.LatestKRWCash(ctx); err != nil {
 		return nil, err
 	} else if ok {
-		startingCash = cash
+		krw = cash
 	}
-	log.Printf("새 세션을 시작합니다: seed=%.0f", startingCash)
-	return simulator.New(cfg, startingCash), nil
+	currency, rate := "KRW", 1.0
+	if market == "US" {
+		fx, err := usdKRW(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("환율 조회 실패(원화 시드를 달러 가격에 그대로 쓰지 않도록 세션을 시작하지 않습니다): %w", err)
+		}
+		currency, rate = "USD", fx
+	}
+	start := krw / rate
+	log.Printf("새 세션을 시작합니다: 원화 잔고 %.0f원 → seed=%.2f %s (환율 %.2f)", krw, start, currency, rate)
+	sim := simulator.New(cfg, start)
+	sim.SetCurrency(currency, rate)
+	return sim, nil
+}
+
+func currencyLabel(st simulator.State) string {
+	if st.Currency == "" {
+		return "KRW"
+	}
+	return st.Currency
 }
 
 // historyObjectKey는 그날 마감 스냅샷을 영구 보관할 GCS 오브젝트 이름이다.
@@ -324,7 +345,9 @@ func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossap
 		UpdatedAt:         time.Now(),
 		Screener:          status,
 	}
-	s.Seed = sim.State().Seed // 당일 시작 시드 — DailyLossProgress의 분모(SPEC.md 4.3)
+	st := sim.State()
+	s.Seed = st.Seed // 당일 시작 시드 — DailyLossProgress의 분모(SPEC.md 4.3)
+	s.Currency, s.FXRate = st.Currency, st.FXRate
 	if pos, ok := sim.Position(); ok {
 		current := pos.EntryPrice
 		if price, err := client.Price(ctx, pos.Symbol); err == nil {

@@ -121,7 +121,7 @@ func TestDifferentKeysDoNotCollide(t *testing.T) {
 	}
 }
 
-func TestLatestCash(t *testing.T) {
+func TestLatestKRWCashSharesOneAccountAcrossMarkets(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "session.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -129,26 +129,32 @@ func TestLatestCash(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 
-	if _, ok, err := store.LatestCash(ctx, "KR"); err != nil || ok {
+	if _, ok, err := store.LatestKRWCash(ctx); err != nil || ok {
 		t.Fatalf("아무것도 저장하지 않았는데 ok=%v err=%v", ok, err)
 	}
 
-	if err := store.Save(ctx, "2026-09-25", "KR", simulator.State{Cash: 1000}); err != nil {
-		t.Fatal(err)
+	save := func(date, market string, st simulator.State) {
+		t.Helper()
+		if err := store.Save(ctx, date, market, st); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := store.Save(ctx, "2026-09-26", "KR", simulator.State{Cash: 2000}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Save(ctx, "2026-09-26", "US", simulator.State{Cash: 9999}); err != nil {
-		t.Fatal(err)
+	save("2026-09-25", "KR", simulator.State{Cash: 1000})
+	save("2026-09-26", "KR", simulator.State{Cash: 2000})
+	if cash, ok, err := store.LatestKRWCash(ctx); err != nil || !ok || cash != 2000 {
+		t.Fatalf("KR만 있을 때: cash=%v ok=%v err=%v", cash, ok, err)
 	}
 
-	cash, ok, err := store.LatestCash(ctx, "KR")
-	if err != nil || !ok {
-		t.Fatalf("최근 현금 조회 실패: ok=%v err=%v", ok, err)
+	// 같은 날 이어서 도는 US 세션은 USD로 끝나므로 고정 환율로 원화로 되돌려 읽는다.
+	save("2026-09-26", "US", simulator.State{Cash: 70, Currency: "USD", FXRate: 1400})
+	if cash, ok, err := store.LatestKRWCash(ctx); err != nil || !ok || cash != 98000 {
+		t.Fatalf("US 세션 이후: cash=%v ok=%v err=%v", cash, ok, err)
 	}
-	if cash != 2000 {
-		t.Fatalf("가장 최근 날짜의 현금이 아닙니다: got %v want 2000", cash)
+
+	// 통화 기록이 없던 시절의 US 행은 단위가 섞여 있어 건너뛴다.
+	save("2026-09-27", "US", simulator.State{Cash: 9999})
+	if cash, ok, err := store.LatestKRWCash(ctx); err != nil || !ok || cash != 98000 {
+		t.Fatalf("옛 US 행을 건너뛰지 않았습니다: cash=%v ok=%v err=%v", cash, ok, err)
 	}
 }
 
