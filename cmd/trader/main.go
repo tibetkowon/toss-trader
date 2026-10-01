@@ -48,6 +48,7 @@ func detectMarket(now time.Time) string {
 }
 
 func main() {
+	log.Printf("trader 버전: %s", buildVersion())
 	market := os.Getenv("MARKET")
 	if market != "KR" && market != "US" {
 		market = detectMarket(time.Now())
@@ -218,20 +219,21 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		time.Sleep(pollInterval)
 	}
 
+	// 청산 시세를 못 받아도 마감 저장·스냅샷·히스토리 보관은 반드시 수행하고, 오류는 그 뒤에 돌려줍니다
+	// (2026-09-30: 청산 시세 오류로 조기 반환해 그날 히스토리가 통째로 사라졌음).
+	var eodErr error
 	if pos, ok := sim.Position(); ok {
-		price, err := client.Price(ctx, pos.Symbol)
-		if err != nil {
-			return err
+		obs := pollPrices(ctx, client, []string{pos.Symbol}, pos.Symbol)[0]
+		if obs.Err != nil {
+			eodErr = fmt.Errorf("장마감 청산 시세 조회 실패: %w", obs.Err)
+			log.Print(eodErr)
+		} else {
+			eodSetup := setupsFor(gate.Setup, nil, pos.Symbol)[pos.Symbol]
+			eodAction := sim.OnTick(eodSetup, obs.Price, true)
+			log.Printf("장마감 강제청산: %s %s %d주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
+				eodAction.Type, eodAction.Symbol, eodAction.Shares, eodAction.Price, eodAction.PnL, sim.Cash())
+			recentOrders = appendRecentOrder(recentOrders, toOrder(eodAction, time.Now()), 10)
 		}
-		last, err := strconv.ParseFloat(price.LastPrice, 64)
-		if err != nil {
-			return err
-		}
-		eodSetup := setupsFor(gate.Setup, nil, pos.Symbol)[pos.Symbol]
-		eodAction := sim.OnTick(eodSetup, last, true)
-		log.Printf("장마감 강제청산: %s %s %d주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
-			eodAction.Type, eodAction.Symbol, eodAction.Shares, eodAction.Price, eodAction.PnL, sim.Cash())
-		recentOrders = appendRecentOrder(recentOrders, toOrder(eodAction, time.Now()), 10)
 	}
 
 	if err := store.Save(ctx, today, market, sim.State()); err != nil {
@@ -244,7 +246,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	} else if err := uploader.Upload(ctx, historyObjectKey(today, market), "application/json", data); err != nil {
 		log.Printf("마감 히스토리 업로드 실패: %v", err)
 	}
-	return nil
+	return eodErr
 }
 
 // loadOrStartSimulator는 오늘 세션을 복구하거나 새로 시작합니다. KR/US는 하나의 원화 계좌를
@@ -348,6 +350,7 @@ func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossap
 	st := sim.State()
 	s.Seed = st.Seed // 당일 시작 시드 — DailyLossProgress의 분모(SPEC.md 4.3)
 	s.Currency, s.FXRate = st.Currency, st.FXRate
+	s.Version = buildVersion()
 	if pos, ok := sim.Position(); ok {
 		current := pos.EntryPrice
 		if price, err := client.Price(ctx, pos.Symbol); err == nil {

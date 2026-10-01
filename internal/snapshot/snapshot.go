@@ -46,6 +46,7 @@ type Snapshot struct {
 	RecentOrders      []Order          `json:"recent_orders"`
 	UpdatedAt         time.Time        `json:"updated_at"`
 	Screener          *ScreenerStatus  `json:"screener,omitempty"`
+	Version           string           `json:"version,omitempty"` // 이 스냅샷을 만든 trader 바이너리의 git 커밋
 }
 
 // DailyLossProgress는 손실 한도 사용 비율을 반환합니다(1 = 100%).
