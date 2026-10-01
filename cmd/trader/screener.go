@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -111,7 +112,7 @@ func setupsFor(setupOf func(string) (simulator.Setup, bool), symbols []string, h
 }
 
 type priceSource interface {
-	Price(ctx context.Context, symbol string) (*tossapi.Price, error)
+	Prices(ctx context.Context, symbols ...string) (map[string]tossapi.Price, error)
 }
 
 // 보유 종목은 손절 감시가 걸려 있어 한 틱이라도 못 보면 안 되므로, 실패 시 짧게 재시도합니다.
@@ -119,29 +120,52 @@ const heldRetries = 2
 
 var heldRetryDelay = 300 * time.Millisecond
 
+// pollPrices는 종목들을 묶음 단위로 /prices에 조회합니다(종목당 1회 호출은 MARKET_DATA 한도를 넘김).
+// symbols 순서대로 결과를 돌려주며, 묶음 호출이 실패하면 그 묶음의 종목 전부가 오류로 보고됩니다.
 func pollPrices(ctx context.Context, src priceSource, symbols []string, held string) []tradingloop.PriceObservation {
 	observations := make([]tradingloop.PriceObservation, 0, len(symbols))
-	for _, symbol := range symbols {
-		obs := fetchObservation(ctx, src, symbol)
-		for attempt := 0; symbol == held && obs.Err != nil && attempt < heldRetries; attempt++ {
+	for start := 0; start < len(symbols); start += tossapi.MaxPricesPerCall {
+		end := min(start+tossapi.MaxPricesPerCall, len(symbols))
+		observations = append(observations, fetchObservations(ctx, src, symbols[start:end])...)
+	}
+	if held == "" {
+		return observations
+	}
+	for i := range observations {
+		if observations[i].Symbol != held {
+			continue
+		}
+		for attempt := 0; observations[i].Err != nil && attempt < heldRetries; attempt++ {
 			select {
 			case <-ctx.Done():
-				attempt = heldRetries
-				continue
+				return observations
 			case <-time.After(heldRetryDelay):
 			}
-			obs = fetchObservation(ctx, src, symbol)
+			observations[i] = fetchObservations(ctx, src, []string{held})[0]
 		}
-		observations = append(observations, obs)
 	}
 	return observations
 }
 
-func fetchObservation(ctx context.Context, src priceSource, symbol string) tradingloop.PriceObservation {
-	price, err := src.Price(ctx, symbol)
-	if err != nil {
-		return tradingloop.PriceObservation{Symbol: symbol, Err: err}
+func fetchObservations(ctx context.Context, src priceSource, symbols []string) []tradingloop.PriceObservation {
+	out := make([]tradingloop.PriceObservation, len(symbols))
+	prices, err := src.Prices(ctx, symbols...)
+	for i, symbol := range symbols {
+		if err != nil {
+			out[i] = tradingloop.PriceObservation{Symbol: symbol, Err: err}
+			continue
+		}
+		price, ok := prices[symbol]
+		if !ok {
+			out[i] = tradingloop.PriceObservation{Symbol: symbol, Err: errors.New("시세 응답에 종목이 없습니다")}
+			continue
+		}
+		out[i] = observationOf(symbol, price)
 	}
+	return out
+}
+
+func observationOf(symbol string, price tossapi.Price) tradingloop.PriceObservation {
 	last, err := strconv.ParseFloat(price.LastPrice, 64)
 	if err != nil {
 		return tradingloop.PriceObservation{Symbol: symbol, Err: err}

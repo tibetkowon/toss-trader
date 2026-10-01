@@ -389,3 +389,45 @@ func TestNon429ErrorMessageStaysPlain(t *testing.T) {
 		t.Fatalf("메시지: %q", got)
 	}
 }
+
+func TestResetTimeReadsSmallValuesAsRelativeSeconds(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	if got := resetTime(now, 1); !got.Equal(now.Add(time.Second)) {
+		t.Errorf("상대 초: %v", got)
+	}
+	if got := resetTime(now, 1_800_000_005); !got.Equal(time.Unix(1_800_000_005, 0)) {
+		t.Errorf("epoch 초: %v", got)
+	}
+}
+
+func Test429WithoutTimingCoolsDownTheGroup(t *testing.T) {
+	var calls atomic.Int32
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			writeToken(w)
+			return
+		}
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		fmt.Fprint(w, `{"result":[{"symbol":"A","timestamp":"t","lastPrice":"1"}]}`)
+	})
+	clock := time.Unix(1_800_000_000, 0)
+	var slept time.Duration
+	client.now = func() time.Time { return clock }
+	client.sleep = func(_ context.Context, d time.Duration) error { slept += d; clock = clock.Add(d); return nil }
+
+	if _, err := client.Prices(context.Background(), "A"); err == nil {
+		t.Fatal("타이밍 정보 없는 429는 오류로 보고되어야 합니다")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("재시도하면 안 됩니다: calls=%d", calls.Load())
+	}
+	if _, err := client.Prices(context.Background(), "A"); err != nil {
+		t.Fatal(err)
+	}
+	if slept < fallbackCooldown || slept > 2*fallbackCooldown {
+		t.Fatalf("같은 그룹의 다음 호출은 쿨다운만큼 기다려야 합니다: %v", slept)
+	}
+}

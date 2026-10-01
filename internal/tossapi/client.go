@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -403,9 +404,8 @@ func (c *Client) observe(group string, resp *http.Response) bool {
 		Limit:     nonnegative(resp.Header.Get("X-RateLimit-Limit")),
 		Remaining: nonnegative(resp.Header.Get("X-RateLimit-Remaining")),
 	}
-	// X-RateLimit-Reset은 Unix epoch 초로 해석합니다.
 	if reset := nonnegative(resp.Header.Get("X-RateLimit-Reset")); reset >= 0 {
-		limit.Reset = time.Unix(reset, 0)
+		limit.Reset = resetTime(now, reset)
 	}
 	if limit.Remaining == 0 && limit.Reset.After(now) {
 		limit.BlockedUntil = limit.Reset
@@ -426,13 +426,36 @@ func (c *Client) observe(group string, resp *http.Response) bool {
 		if until.After(limit.BlockedUntil) {
 			limit.BlockedUntil = until
 		}
+		if !retryAfterValid && !limit.BlockedUntil.After(now) {
+			// 타이밍 정보가 없는 429: 이 요청은 재시도하지 않지만, 같은 그룹의 다음 요청들이
+			// 곧바로 또 429를 맞지 않도록 짧게 쿨다운합니다.
+			limit.BlockedUntil = now.Add(fallbackCooldown + time.Duration(rand.Int63n(int64(fallbackCooldown/2))))
+			c.recordLimit(group, limit)
+			return false
+		}
 	}
+	c.recordLimit(group, limit)
+	return retryAfterValid || limit.BlockedUntil.After(now)
+}
+
+func (c *Client) recordLimit(group string, limit RateLimit) {
 	c.mu.Lock()
 	if old := c.limits[group]; old.BlockedUntil.After(limit.BlockedUntil) {
 		limit.BlockedUntil = old.BlockedUntil
 	}
 	c.limits[group] = limit
 	c.mu.Unlock()
-	// 유효한 제한 정보가 없으면 추측한 할당량으로 반복 요청하지 않습니다.
-	return retryAfterValid || limit.BlockedUntil.After(now)
+}
+
+// fallbackCooldown은 429에 대기 시간 정보가 전혀 없을 때 그룹에 거는 최소 대기입니다.
+// 실측한 MARKET_DATA 창이 약 1초라 그에 맞춥니다.
+const fallbackCooldown = time.Second
+
+// resetTime은 X-RateLimit-Reset을 해석합니다. 실API는 남은 초(예: 1)를 주므로 작은 값은
+// 상대 초로, epoch 초로 보이는 큰 값은 절대 시각으로 봅니다.
+func resetTime(now time.Time, v int64) time.Time {
+	if v < 1_000_000_000 {
+		return now.Add(time.Duration(v) * time.Second)
+	}
+	return time.Unix(v, 0)
 }

@@ -435,3 +435,43 @@ func TestStockIsLeveraged(t *testing.T) {
 		})
 	}
 }
+
+func TestPricesBatchesIntoOneCall(t *testing.T) {
+	var calls atomic.Int32
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			writeToken(w)
+			return
+		}
+		calls.Add(1)
+		if got := r.URL.Query().Get("symbols"); got != "A,B,C" {
+			t.Errorf("symbols 불일치: %q", got)
+		}
+		fmt.Fprint(w, `{"result":[{"symbol":"A","timestamp":"t","lastPrice":"1"},{"symbol":"C","timestamp":"t","lastPrice":"3"}]}`)
+	})
+	got, err := client.Prices(context.Background(), "A", "B", "C")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 || len(got) != 2 || got["A"].LastPrice != "1" || got["C"].LastPrice != "3" || len(got["A"].Raw) == 0 {
+		t.Fatalf("calls=%d got=%+v", calls.Load(), got)
+	}
+	if _, ok := got["B"]; ok {
+		t.Error("응답에 없는 종목은 결과에서 빠져야 합니다")
+	}
+}
+
+func TestPricesRejectsBadInput(t *testing.T) {
+	client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("HTTP 요청이 발생했습니다: %s", r.URL)
+	})
+	tooMany := make([]string, MaxPricesPerCall+1)
+	for i := range tooMany {
+		tooMany[i] = "S" + strconv.Itoa(i)
+	}
+	for name, symbols := range map[string][]string{"none": nil, "too many": tooMany, "blank": {"A", " "}, "comma": {"A,B"}} {
+		if _, err := client.Prices(context.Background(), symbols...); err == nil {
+			t.Errorf("%s: 잘못된 입력을 허용했습니다", name)
+		}
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"math"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -104,12 +105,14 @@ func TestSetupsForGivesHeldSymbolAFallback(t *testing.T) {
 
 type fakePrices map[string]*tossapi.Price
 
-func (f fakePrices) Price(_ context.Context, symbol string) (*tossapi.Price, error) {
-	p, ok := f[symbol]
-	if !ok {
-		return nil, errors.New("503")
+func (f fakePrices) Prices(_ context.Context, symbols ...string) (map[string]tossapi.Price, error) {
+	out := map[string]tossapi.Price{}
+	for _, s := range symbols {
+		if p, ok := f[s]; ok {
+			out[s] = *p
+		}
 	}
-	return p, nil
+	return out, nil
 }
 
 func TestPollPricesKeepsOrderAndReportsErrors(t *testing.T) {
@@ -199,15 +202,24 @@ func TestDescribeUpdate(t *testing.T) {
 type flakyPrices struct {
 	failsLeft map[string]int
 	calls     map[string]int
+	batches   [][]string
 }
 
-func (f *flakyPrices) Price(_ context.Context, symbol string) (*tossapi.Price, error) {
-	f.calls[symbol]++
-	if f.failsLeft[symbol] > 0 {
-		f.failsLeft[symbol]--
+func (f *flakyPrices) Prices(_ context.Context, symbols ...string) (map[string]tossapi.Price, error) {
+	f.batches = append(f.batches, append([]string(nil), symbols...))
+	out := map[string]tossapi.Price{}
+	for _, s := range symbols {
+		f.calls[s]++
+		if f.failsLeft[s] > 0 {
+			f.failsLeft[s]--
+			continue
+		}
+		out[s] = tossapi.Price{Symbol: s, LastPrice: "100", Timestamp: "2026-10-01T01:00:00Z"}
+	}
+	if len(out) == 0 {
 		return nil, errors.New("429")
 	}
-	return &tossapi.Price{LastPrice: "100", Timestamp: "2026-10-01T01:00:00Z"}, nil
+	return out, nil
 }
 
 func TestPollPricesRetriesHeldSymbolOnly(t *testing.T) {
@@ -234,5 +246,41 @@ func TestPollPricesHeldRetryGivesUp(t *testing.T) {
 	obs := pollPrices(context.Background(), src, []string{"H"}, "H")
 	if obs[0].Err == nil || src.calls["H"] != 1+heldRetries {
 		t.Errorf("재시도 한도 후 오류로 보고해야 합니다: %+v calls=%d", obs[0], src.calls["H"])
+	}
+}
+
+func TestPollPricesBatchesSymbolsInOrder(t *testing.T) {
+	var symbols []string
+	for i := 0; i < tossapi.MaxPricesPerCall*2+3; i++ {
+		symbols = append(symbols, "S"+strconv.Itoa(i))
+	}
+	src := &flakyPrices{failsLeft: map[string]int{}, calls: map[string]int{}}
+	obs := pollPrices(context.Background(), src, symbols, "")
+	if len(src.batches) != 3 || len(src.batches[0]) != tossapi.MaxPricesPerCall || len(src.batches[2]) != 3 {
+		t.Fatalf("묶음 호출: %v", src.batches)
+	}
+	for i, o := range obs {
+		if o.Symbol != symbols[i] || o.Err != nil {
+			t.Fatalf("%d: %+v", i, o)
+		}
+	}
+}
+
+func TestPollPricesBatchErrorMarksOnlyThatBatch(t *testing.T) {
+	var symbols []string
+	failing := map[string]int{}
+	for i := 0; i < tossapi.MaxPricesPerCall+2; i++ {
+		s := "S" + strconv.Itoa(i)
+		symbols = append(symbols, s)
+		if i >= tossapi.MaxPricesPerCall {
+			failing[s] = 1
+		}
+	}
+	src := &flakyPrices{failsLeft: failing, calls: map[string]int{}}
+	obs := pollPrices(context.Background(), src, symbols, "")
+	for i, o := range obs {
+		if (i >= tossapi.MaxPricesPerCall) != (o.Err != nil) {
+			t.Errorf("%s: err=%v", o.Symbol, o.Err)
+		}
 	}
 }

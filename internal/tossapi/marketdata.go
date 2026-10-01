@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -200,7 +201,40 @@ func (c *Client) Price(ctx context.Context, symbol string) (*Price, error) {
 	if strings.TrimSpace(symbol) == "" {
 		return nil, errors.New("symbol이 필요합니다")
 	}
-	query := url.Values{"symbols": {symbol}}
+	prices, err := c.fetchPrices(ctx, []string{symbol})
+	if err != nil {
+		return nil, err
+	}
+	return &prices[0], nil
+}
+
+// MaxPricesPerCall은 /prices 한 번에 보내는 심볼 수 상한입니다. 실API로 11개까지 확인했습니다.
+const MaxPricesPerCall = 10
+
+// Prices는 여러 종목의 현재가를 한 번의 호출로 가져와 symbol별로 돌려줍니다.
+// 응답에 없는 종목은 결과 맵에서 빠집니다. 호출당 상한(MaxPricesPerCall) 이내로만 보내세요.
+func (c *Client) Prices(ctx context.Context, symbols ...string) (map[string]Price, error) {
+	if len(symbols) == 0 || len(symbols) > MaxPricesPerCall {
+		return nil, fmt.Errorf("symbols는 1~%d개여야 합니다", MaxPricesPerCall)
+	}
+	for _, s := range symbols {
+		if strings.TrimSpace(s) == "" || strings.Contains(s, ",") {
+			return nil, errors.New("잘못된 symbol")
+		}
+	}
+	prices, err := c.fetchPrices(ctx, symbols)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]Price, len(prices))
+	for _, p := range prices {
+		out[p.Symbol] = p
+	}
+	return out, nil
+}
+
+func (c *Client) fetchPrices(ctx context.Context, symbols []string) ([]Price, error) {
+	query := url.Values{"symbols": {strings.Join(symbols, ",")}}
 	body, err := c.get(ctx, "MARKET_DATA", "/api/v1/prices?"+query.Encode(), "")
 	if err != nil {
 		return nil, err
@@ -214,9 +248,10 @@ func (c *Client) Price(ctx context.Context, symbol string) (*Price, error) {
 	if err := json.Unmarshal(body, &raws); err != nil || len(raws) != len(prices) {
 		return nil, errors.New("시세 응답 원문 파싱 실패")
 	}
-	result := prices[0]
-	result.Raw = raws[0]
-	return &result, nil
+	for i := range prices {
+		prices[i].Raw = raws[i]
+	}
+	return prices, nil
 }
 
 // Candle은 캔들 한 개의 OHLCV와 응답 원문을 보존합니다.
