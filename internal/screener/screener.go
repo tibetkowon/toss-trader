@@ -27,7 +27,8 @@ type Source interface {
 var _ Source = (*tossapi.Client)(nil)
 
 // Config의 0값 의미: EvalPerMin 0 = 제한 없음, StartDelay 0 = 지연 없음,
-// KeepRank 0 = 히스테리시스 끔, MinAffordable 0 = 규칙 끔.
+// KeepRank 0 = 히스테리시스 끔(기본은 RankDepth와 같은 30: 목록에 보이는 활성 종목은 밀어내지 않음),
+// MinAffordable 0 = 규칙 끔.
 type Config struct {
 	Market         string
 	NoiseMin       float64 // 비율(0.025 = 2.5%)
@@ -51,7 +52,7 @@ func DefaultConfig(market string) Config {
 	return Config{
 		Market: market, NoiseMin: 0.025, NoiseMax: 0.06, NoiseWindow: 20, MAWindow: 5, K: 0.5,
 		RankDepth: 30, ActiveCount: 10, MinAffordable: 2, EvalPerMin: 3,
-		StartDelay: 5 * time.Minute, RefreshEvery: time.Minute, KeepRank: 0, LazyExpand: true,
+		StartDelay: 5 * time.Minute, RefreshEvery: time.Minute, KeepRank: 30, LazyExpand: true,
 	}
 }
 

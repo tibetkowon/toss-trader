@@ -50,3 +50,10 @@ func TestEntrySetup(t *testing.T) {
 		t.Fatalf("Setup = %+v", s)
 	}
 }
+
+func TestDefaultConfigEnablesHysteresisAtRankDepth(t *testing.T) {
+	c := DefaultConfig("KR")
+	if c.KeepRank != c.RankDepth {
+		t.Fatalf("KeepRank=%d, RankDepth=%d: 기본값은 랭킹 목록 전체에서 활성 종목을 유지해야 합니다", c.KeepRank, c.RankDepth)
+	}
+}

@@ -86,7 +86,7 @@
 | `NOISE_MIN` / `NOISE_MAX` | 2.5 / 6 (%) | 노이즈 구간 |
 | `RANK_START_DELAY_MINUTES` | 5 | 개장 후 첫 갱신까지 |
 | `RANK_REFRESH_SECONDS` | 60 | 활성 집합 갱신 간격 |
-| `ACTIVE_KEEP_RANK` | 0 (끔) | 히스테리시스: 이 순위 밖으로 밀릴 때까지 활성 유지 |
+| `ACTIVE_KEEP_RANK` | 30 (= `RANK_DEPTH`, 0이면 끔) | 히스테리시스: 이 순위 밖으로 밀릴 때까지 활성 유지. 랭킹 목록(`RANK_DEPTH`) 밖 순위는 알 수 없으므로 그보다 크게 잡아도 효과 없음 |
 | `CHASE_LIMIT_PCT` | 1 (%) | 추격 상한, 0이면 끔 |
 | `EVAL_PER_MIN` | 3 | 분당 신규 종목 평가 상한, 0이면 무제한 |
 | `LAZY_EXPAND` | 켬 | `false`/`0`이면 첫 갱신의 상위 종목으로 후보 고정 |

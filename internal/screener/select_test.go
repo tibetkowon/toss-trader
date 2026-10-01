@@ -49,6 +49,18 @@ func TestSelectActiveHysteresisKeepsPrevWithinKeepRank(t *testing.T) {
 	}
 }
 
+func TestSelectActiveHysteresisStopsBoundaryFlapping(t *testing.T) {
+	// 랭킹 경계(꼴찌)에서 WDC/STX가 번갈아 들어오는 상황: 직전 활성 [A, WDC]
+	round2 := ranked("A", 1, 10.0, "STX", 2, 10.0, "WDC", 3, 10.0)
+	prev := []string{"A", "WDC"}
+	if got := SelectActive(round2, prev, 2, 0, 0, 0); !reflect.DeepEqual(got, []string{"A", "STX"}) {
+		t.Fatalf("히스테리시스 없이는 교체가 일어나야 합니다: %v", got)
+	}
+	if got := SelectActive(round2, prev, 2, 3, 0, 0); !reflect.DeepEqual(got, []string{"A", "WDC"}) {
+		t.Fatalf("히스테리시스가 있으면 유지되어야 합니다: %v", got)
+	}
+}
+
 func TestSelectActiveMinAffordableSwapsLowestUnaffordable(t *testing.T) {
 	// maxPrice 100: A,B는 못 산다(비싸다). C는 살 수 있다.
 	passing := ranked("A", 1, 500.0, "B", 2, 300.0, "C", 3, 50.0, "D", 4, 60.0)
