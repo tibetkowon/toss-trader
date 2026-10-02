@@ -156,7 +156,9 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	}
 
 	today := time.Now().Format(dateLayout)
-	cfg := simulator.Config{StopLossPct: 0.02, DailyLossLimitPct: 0.05, CommissionRate: commissionRate}
+	cfg := simulator.Config{StopLossPct: 0.02, DailyLossLimitPct: 0.05, CommissionRate: commissionRate, Fractional: market == "US"}
+	// 미국 소수점 매수는 금액 지정 주문으로만 가능하고 정규장 종료 1시간 전까지만 접수됩니다(SPEC.md 7.4).
+	amountOrderCutoff := sessionEnd.Add(-time.Hour)
 
 	sim, err := loadOrStartSimulator(ctx, store, cfg, today, market, client.USDKRWRate)
 	if err != nil {
@@ -178,6 +180,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	const staleness = 30 * time.Second
 	heartbeatInterval := heartbeatIntervalDuration()
 	lastHeartbeat := time.Now()
+	skips := newSkipTracker()
 
 	for time.Now().Before(eodCutoff) {
 		now := time.Now()
@@ -190,6 +193,9 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		}
 		symbols := pollSymbols(gate.Active(), held)
 		setups := setupsFor(gate.Setup, symbols, held)
+		if cfg.Fractional && held == "" && now.After(amountOrderCutoff) {
+			setups = map[string]simulator.Setup{}
+		}
 		observations := pollPrices(ctx, client, symbols, held)
 		for _, line := range describeSkippedObservations(observations, now, staleness) {
 			log.Println(line)
@@ -198,11 +204,11 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		for _, symbol := range blocked {
 			log.Printf("추격 상한 초과로 오늘 진입에서 제외: %s (목표가 %.2f)", symbol, setups[symbol].TargetPrice)
 		}
-		actions := tradingloop.ProcessTick(sim, setups, observations, now, staleness)
+		actions := skips.filter(tradingloop.ProcessTick(sim, setups, observations, now, staleness), sim.Cash())
 		if len(actions) > 0 {
 			for _, action := range actions {
-				log.Printf("체결: %s %s %d주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
-					action.Type, action.Symbol, action.Shares, action.Price, action.PnL, sim.Cash())
+				log.Printf("체결: %s %s %s주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
+					action.Type, action.Symbol, formatShares(action.Shares), action.Price, action.PnL, sim.Cash())
 				recentOrders = appendRecentOrder(recentOrders, toOrder(action, now), 10)
 			}
 			if err := store.Save(ctx, today, market, sim.State()); err != nil {
@@ -230,12 +236,15 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		} else {
 			eodSetup := setupsFor(gate.Setup, nil, pos.Symbol)[pos.Symbol]
 			eodAction := sim.OnTick(eodSetup, obs.Price, true)
-			log.Printf("장마감 강제청산: %s %s %d주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
-				eodAction.Type, eodAction.Symbol, eodAction.Shares, eodAction.Price, eodAction.PnL, sim.Cash())
+			log.Printf("장마감 강제청산: %s %s %s주 @ %.2f (손익 %.2f, 현금 잔고 %.2f)",
+				eodAction.Type, eodAction.Symbol, formatShares(eodAction.Shares), eodAction.Price, eodAction.PnL, sim.Cash())
 			recentOrders = appendRecentOrder(recentOrders, toOrder(eodAction, time.Now()), 10)
 		}
 	}
 
+	for _, line := range skips.summary() {
+		log.Println(line)
+	}
 	if err := store.Save(ctx, today, market, sim.State()); err != nil {
 		log.Printf("세션 상태 저장 실패: %v", err)
 	}
@@ -318,7 +327,7 @@ func toOrder(a simulator.Action, at time.Time) snapshot.Order {
 	return snapshot.Order{
 		Symbol:    a.Symbol,
 		Side:      side,
-		Quantity:  float64(a.Shares),
+		Quantity:  a.Shares,
 		Price:     a.Price,
 		Status:    a.Type.String(),
 		CreatedAt: at,
@@ -360,8 +369,8 @@ func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossap
 		}
 		s.Positions = []snapshot.Position{{
 			Symbol:        pos.Symbol,
-			Quantity:      float64(pos.Shares),
-			UnrealizedPnL: (current - pos.EntryPrice) * float64(pos.Shares),
+			Quantity:      pos.Shares,
+			UnrealizedPnL: (current - pos.EntryPrice) * pos.Shares,
 		}}
 		s.DailyPnL = sim.DailyPnL(current)
 	} else {

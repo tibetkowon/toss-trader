@@ -21,7 +21,12 @@ type Config struct {
 	StopLossPct       float64 // e.g. 0.02 for -2% (SPEC.md 4.3)
 	DailyLossLimitPct float64 // e.g. 0.05 for 5% of seed (SPEC.md 4.3)
 	CommissionRate    float64 // from tossapi.Commission.CommissionRate (SPEC.md 6.1)
+	// Fractional이면 매수 수량을 소수점 6자리까지 내림합니다(미국 금액 지정 주문, SPEC.md 7.4).
+	// 꺼져 있으면 정수 주수입니다(국내 종목).
+	Fractional bool
 }
+
+const fractionalDecimals = 1e6
 
 // Setup is the per-symbol, per-day information computed once before the
 // session starts, from data through yesterday's close only (look-ahead
@@ -65,7 +70,7 @@ type Action struct {
 	Type     ActionType
 	Symbol   string
 	Price    float64
-	Shares   int
+	Shares   float64
 	Proceeds float64 // signed cash flow: negative for a buy, positive for a sell
 	PnL      float64 // realized P&L net of commission; only meaningful for StoppedOut/ClosedEndOfDay
 }
@@ -74,7 +79,7 @@ type Action struct {
 // most one concurrent position).
 type Position struct {
 	Symbol     string
-	Shares     int
+	Shares     float64
 	EntryPrice float64
 	// CostBasis is notional + buy-side commission actually paid — used as
 	// the P&L baseline at close so buy-side commission isn't silently
@@ -214,7 +219,7 @@ func Restore(cfg Config, state State) *Simulator {
 func (s *Simulator) DailyPnL(currentPriceOfHeld float64) float64 {
 	unrealized := 0.0
 	if s.position != nil {
-		unrealized = (currentPriceOfHeld - s.position.EntryPrice) * float64(s.position.Shares)
+		unrealized = (currentPriceOfHeld - s.position.EntryPrice) * s.position.Shares
 	}
 	return s.realizedPnLToday + unrealized
 }
@@ -261,11 +266,14 @@ func (s *Simulator) OnTick(setup Setup, price float64, isEndOfDay bool) Action {
 // openPosition sizes the buy as all available cash (SPEC.md 4.2: 균등분할 ÷
 // 최대동시보유(1) = 전액) and fills at the observed price plus commission.
 func (s *Simulator) openPosition(symbol string, price float64) Action {
-	shares := int(math.Floor(s.cash / (price * (1 + s.cfg.CommissionRate))))
+	shares := math.Floor(s.cash / (price * (1 + s.cfg.CommissionRate)))
+	if s.cfg.Fractional {
+		shares = math.Floor(s.cash/(price*(1+s.cfg.CommissionRate))*fractionalDecimals) / fractionalDecimals
+	}
 	if shares <= 0 {
 		return Action{Type: SkippedZeroShares, Symbol: symbol, Price: price}
 	}
-	notional := price * float64(shares)
+	notional := price * shares
 	commission := notional * s.cfg.CommissionRate
 	cost := notional + commission
 	s.cash -= cost
@@ -275,7 +283,7 @@ func (s *Simulator) openPosition(symbol string, price float64) Action {
 
 func (s *Simulator) closePosition(symbol string, price float64, isStopLoss bool) Action {
 	pos := s.position
-	notional := price * float64(pos.Shares)
+	notional := price * pos.Shares
 	commission := notional * s.cfg.CommissionRate
 	proceeds := notional - commission
 	pnl := proceeds - pos.CostBasis

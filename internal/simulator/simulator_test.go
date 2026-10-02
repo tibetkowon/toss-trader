@@ -294,3 +294,27 @@ func TestActionTypeString(t *testing.T) {
 		}
 	}
 }
+
+func TestFractionalBuyUsesAllCashDownToSixDecimals(t *testing.T) {
+	cfg := testConfig()
+	cfg.Fractional = true
+	sim := New(cfg, 73.94)
+	action := sim.OnTick(Setup{Symbol: "A", TargetPrice: 100, TrendOK: true}, 150, false)
+	if action.Type != Bought {
+		t.Fatalf("소수점 모드에서는 1주 미만도 매수해야 합니다: %+v", action)
+	}
+	want := math.Floor(73.94/(150*(1+cfg.CommissionRate))*1e6) / 1e6
+	if action.Shares != want || action.Shares >= 1 {
+		t.Fatalf("shares = %v, want %v", action.Shares, want)
+	}
+	if sim.Cash() < 0 || sim.Cash() > 0.01 {
+		t.Fatalf("현금이 거의 남지 않아야 합니다: %v", sim.Cash())
+	}
+}
+
+func TestIntegerModeStillSkipsWhenOneShareUnaffordable(t *testing.T) {
+	sim := New(testConfig(), 73.94)
+	if a := sim.OnTick(Setup{Symbol: "A", TargetPrice: 100, TrendOK: true}, 150, false); a.Type != SkippedZeroShares {
+		t.Fatalf("정수 모드는 스킵해야 합니다: %+v", a)
+	}
+}

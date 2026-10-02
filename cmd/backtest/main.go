@@ -284,7 +284,7 @@ func printReport(report backtest.Report, startingCash float64) {
 		for _, a := range day.Actions {
 			if a.Type == simulator.Bought || a.Type == simulator.StoppedOut || a.Type == simulator.ClosedEndOfDay {
 				tradeCount++
-				fmt.Printf("%s %-10v %s %d주 @ %.0f (PnL %.0f)\n", day.Date, a.Type, a.Symbol, a.Shares, a.Price, a.PnL)
+				fmt.Printf("%s %-10v %s %v주 @ %.0f (PnL %.0f)\n", day.Date, a.Type, a.Symbol, a.Shares, a.Price, a.PnL)
 			}
 		}
 	}

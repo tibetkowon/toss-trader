@@ -45,6 +45,10 @@ func envInt(getenv func(string) string, key string, min int) (int, bool) {
 func screenerConfig(market string, commissionRate float64, getenv func(string) string) screener.Config {
 	c := screener.DefaultConfig(market)
 	c.CommissionRate = commissionRate
+	if market == "US" {
+		// 미국은 소수점 매수라 1주 가격이 시드를 넘어도 살 수 있으므로 "살 수 있는 종목" 보장 규칙이 필요 없습니다.
+		c.MinAffordable = 0
+	}
 	if n, ok := envInt(getenv, "RANK_DEPTH", 1); ok {
 		c.RankDepth = n
 	}

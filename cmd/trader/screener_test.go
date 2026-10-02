@@ -284,3 +284,13 @@ func TestPollPricesBatchErrorMarksOnlyThatBatch(t *testing.T) {
 		}
 	}
 }
+
+func TestScreenerConfigDisablesAffordabilityRuleForFractionalUS(t *testing.T) {
+	none := func(string) string { return "" }
+	if screenerConfig("US", 0, none).MinAffordable != 0 {
+		t.Error("US는 소수점 매수라 살 수 있는 종목 보장 규칙을 꺼야 합니다")
+	}
+	if screenerConfig("KR", 0, none).MinAffordable == 0 {
+		t.Error("KR은 정수 주식이라 규칙을 유지해야 합니다")
+	}
+}
