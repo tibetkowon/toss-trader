@@ -49,6 +49,31 @@ type Snapshot struct {
 	Screener          *ScreenerStatus  `json:"screener,omitempty"`
 	Version           string           `json:"version,omitempty"` // 이 스냅샷을 만든 trader 바이너리의 git 커밋
 	Summary           *DaySummary      `json:"summary,omitempty"` // 마감 시점에만 채워지는 일일 요약
+	Config            *EffectiveConfig `json:"config,omitempty"`  // 이 프로세스가 실제 적용 중인 설정(환경변수 적용 후)
+}
+
+// EffectiveConfig는 트레이더가 이번 세션에 실제로 적용 중인 설정입니다. 비율은 소수(0.02 = 2%)이고,
+// 시간 값은 필드 이름의 단위를 따릅니다. 웹 시스템 화면에서 저장된 설정과 실행 중인 값을 비교하는 데 씁니다.
+type EffectiveConfig struct {
+	StopLossPct          float64 `json:"stop_loss_pct"`
+	DailyLossLimitPct    float64 `json:"daily_loss_limit_pct"`
+	K                    float64 `json:"k"`
+	MAWindow             int     `json:"ma_window"`
+	NoiseWindow          int     `json:"noise_window"`
+	NoiseMin             float64 `json:"noise_min"`
+	NoiseMax             float64 `json:"noise_max"`
+	MinAffordable        int     `json:"min_affordable"`
+	RankDepth            int     `json:"rank_depth"`
+	ActiveCount          int     `json:"active_count"`
+	ActiveKeepRank       int     `json:"active_keep_rank"`
+	EvalPerMin           int     `json:"eval_per_min"`
+	LazyExpand           bool    `json:"lazy_expand"`
+	RankStartDelayMin    int     `json:"rank_start_delay_minutes"`
+	RankRefreshSec       int     `json:"rank_refresh_seconds"`
+	ChaseLimitPct        float64 `json:"chase_limit_pct"`
+	PollIntervalSec      int     `json:"poll_interval_seconds"`
+	HeartbeatIntervalSec int     `json:"heartbeat_interval_seconds"`
+	EODBufferMin         int     `json:"eod_buffer_minutes"`
 }
 
 // DaySummary는 세션 마감 시점의 하루 결과와 계좌 누적 상태입니다. 금액은 모두 원화, 비율은 소수
