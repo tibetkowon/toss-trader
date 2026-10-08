@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.env.local
+# 루트 .gitignore의 `.env.*` 규칙에서 예시 파일만 다시 포함합니다.
+!.env.example
