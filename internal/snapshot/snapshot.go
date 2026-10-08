@@ -4,6 +4,7 @@ package snapshot
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"math"
 	"time"
@@ -47,6 +48,19 @@ type Snapshot struct {
 	UpdatedAt         time.Time        `json:"updated_at"`
 	Screener          *ScreenerStatus  `json:"screener,omitempty"`
 	Version           string           `json:"version,omitempty"` // 이 스냅샷을 만든 trader 바이너리의 git 커밋
+	Summary           *DaySummary      `json:"summary,omitempty"` // 마감 시점에만 채워지는 일일 요약
+}
+
+// DaySummary는 세션 마감 시점의 하루 결과와 계좌 누적 상태입니다. 금액은 모두 원화, 비율은 소수
+// (0.1 = 10%)입니다. 마감 히스토리 파일 하나만 보고도 그날 성과와 낙폭 여유를 알 수 있게 합니다.
+type DaySummary struct {
+	Trades           int     `json:"trades"` // 그날 체결된 주문 수(매수+매도)
+	DayPnLKRW        float64 `json:"day_pnl_krw"`
+	AccountEquityKRW float64 `json:"account_equity_krw"`
+	CumulativeReturn float64 `json:"cumulative_return"`
+	CurrentDrawdown  float64 `json:"current_drawdown"`
+	MaxDrawdown      float64 `json:"max_drawdown"`
+	DrawdownLevel    string  `json:"drawdown_level"` // ok | warn | critical (report.DrawdownLevel)
 }
 
 // DailyLossProgress는 손실 한도 사용 비율을 반환합니다(1 = 100%).
@@ -83,7 +97,9 @@ func (s Snapshot) RenderHTML() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-var dashboard = template.Must(template.New("dashboard").Parse(`<!doctype html>
+var dashboard = template.Must(template.New("dashboard").Funcs(template.FuncMap{
+	"pct": func(v float64) string { return fmt.Sprintf("%.2f%%", v*100) },
+}).Parse(`<!doctype html>
 <html lang="ko">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>거래 상태</title></head>
 <body>
@@ -93,6 +109,12 @@ var dashboard = template.Must(template.New("dashboard").Parse(`<!doctype html>
 <p>당일 실현+평가 손익(비용 포함): {{.DailyPnL}}</p>
 <p>일일 손실 한도 대비 진행률: {{printf "%.2f" .LossPercent}}%</p>
 <p>킬스위치: {{if .KillSwitch.Halted}}중단{{else}}정상{{end}} / {{.KillSwitch.Reason}}</p>
+{{with .Summary}}
+<h2>일일 요약</h2>
+<p>체결 {{.Trades}}건 / 일 손익 {{printf "%.0f" .DayPnLKRW}}원 / 계좌 자산 {{printf "%.0f" .AccountEquityKRW}}원 (누적 {{pct .CumulativeReturn}})</p>
+<p>고점 대비 현재 낙폭 {{pct .CurrentDrawdown}} / 최대 낙폭 {{pct .MaxDrawdown}} (검증 기준 10%)</p>
+{{if or (eq .DrawdownLevel "warn") (eq .DrawdownLevel "critical")}}<p><strong>낙폭 경고({{.DrawdownLevel}}): 최대 낙폭이 검증 기준 10%에 가까워졌습니다</strong></p>{{end}}
+{{end}}
 <h2>현재 포지션</h2>
 <table><thead><tr><th>종목</th><th>수량</th><th>평가손익</th></tr></thead><tbody>
 {{range .Positions}}<tr><td>{{.Symbol}}</td><td>{{.Quantity}}</td><td>{{.UnrealizedPnL}}</td></tr>

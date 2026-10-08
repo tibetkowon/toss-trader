@@ -107,3 +107,53 @@ func TestRenderHTML(t *testing.T) {
 		}
 	}
 }
+
+func TestSummaryOmittedFromJSONWhenNil(t *testing.T) {
+	data, err := Snapshot{}.RenderJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"summary"`) {
+		t.Fatalf("요약이 없는 라이브 스냅샷에는 summary 키가 없어야 합니다: %s", data)
+	}
+}
+
+func TestSummaryRoundTripsThroughJSON(t *testing.T) {
+	want := &DaySummary{
+		Trades: 2, DayPnLKRW: -2120.14, AccountEquityKRW: 93095.88,
+		CumulativeReturn: -0.0690, CurrentDrawdown: 0.0781, MaxDrawdown: 0.0781, DrawdownLevel: "warn",
+	}
+	data, err := Snapshot{Summary: want}.RenderJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Snapshot
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Summary, want) {
+		t.Fatalf("요약 왕복 불일치: got %+v want %+v", got.Summary, want)
+	}
+}
+
+func TestRenderHTMLShowsSummaryAndDrawdownWarning(t *testing.T) {
+	html, err := Snapshot{Summary: &DaySummary{Trades: 2, DayPnLKRW: -2120, AccountEquityKRW: 93096, MaxDrawdown: 0.0881, DrawdownLevel: "warn"}}.RenderHTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"일일 요약", "체결 2건", "8.81%", "낙폭 경고"} {
+		if !strings.Contains(string(html), want) {
+			t.Errorf("HTML에 %q가 없습니다", want)
+		}
+	}
+	ok, err := Snapshot{Summary: &DaySummary{DrawdownLevel: "ok"}}.RenderHTML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(ok), "낙폭 경고") {
+		t.Error("정상 단계에서는 경고 문구가 없어야 합니다")
+	}
+	if none, _ := (Snapshot{}).RenderHTML(); strings.Contains(string(none), "일일 요약") {
+		t.Error("요약이 없으면 섹션도 없어야 합니다")
+	}
+}

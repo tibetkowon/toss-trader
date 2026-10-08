@@ -47,7 +47,6 @@ func TestDetectMarket(t *testing.T) {
 
 func TestDescribeSkippedObservations(t *testing.T) {
 	now := time.Date(2026, 9, 28, 5, 0, 0, 0, time.UTC)
-	maxAge := 30 * time.Second
 
 	cases := []struct {
 		name  string
@@ -65,9 +64,9 @@ func TestDescribeSkippedObservations(t *testing.T) {
 			wantN: 1,
 		},
 		{
-			name:  "스테일 관측치도 한 줄",
+			name:  "스테일 관측치는 staleTracker가 에피소드 단위로 기록하므로 여기서는 로그 없음",
 			obs:   []tradingloop.PriceObservation{{Symbol: "005930", Price: 70000, Timestamp: now.Add(-time.Minute)}},
-			wantN: 1,
+			wantN: 0,
 		},
 		{
 			name: "8개 전부 에러면 8줄",
@@ -82,7 +81,7 @@ func TestDescribeSkippedObservations(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := describeSkippedObservations(c.obs, now, maxAge)
+			got := describeSkippedObservations(c.obs)
 			if len(got) != c.wantN {
 				t.Errorf("describeSkippedObservations() = %d lines, want %d (%v)", len(got), c.wantN, got)
 			}
