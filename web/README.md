@@ -51,3 +51,16 @@ VITE_BASE=/<버킷>/ npm run build
 - 아이콘(`public/icon-*.png`)은 임시 이미지입니다. `scripts/gen-icons.mjs`를 바꾸거나 PNG를 교체하세요.
 - 번들이 약 784KB입니다(Firebase SDK 포함). 필요하면 화면을 나눠 로드합니다.
 - 전략 핵심값(k, 이동평균 기간 등)도 웹에서 바꿀 수 있습니다. 저장 확인 창에서 경고합니다.
+
+## 화면 미리보기 (Firebase 없이)
+
+`npm run dev`를 실행한 뒤 아래 주소를 엽니다. 목업 데이터로 화면 상태를 바꿔 볼 수 있습니다.
+
+- `/mock/index.html?state=pending`: 저장 v5, 실행 중 v4 (다음 세션 적용 대기)
+- `/mock/index.html`: 저장과 실행 버전이 같음
+- `/mock/index.html?state=empty`: 저장된 설정 없음
+- `/mock/index.html?state=denied`: 권한 없음 안내
+- `/mock/index.html?state=offline`: 실행 상태를 가져오지 못함
+- `/mock/index.html?view=login`: 로그인 화면
+
+미리보기 코드(`mock/`)는 실제 빌드(`npm run build`)에 들어가지 않습니다.

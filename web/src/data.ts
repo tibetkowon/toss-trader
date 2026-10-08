@@ -5,7 +5,6 @@ import {
   runTransaction,
   serverTimestamp,
   type Firestore,
-  type Unsubscribe,
 } from 'firebase/firestore';
 import type { Settings } from './limits';
 
@@ -17,26 +16,30 @@ export class ConflictError extends Error {
   }
 }
 
-// 설정 문서를 실시간으로 구독합니다. 권한이 없으면 onError로 알려 줍니다.
-export function watchSettings(
-  db: Firestore,
-  onData: (stored: StoredSettings | null) => void,
-  onError: (err: { code?: string }) => void,
-): Unsubscribe {
-  return onSnapshot(
-    doc(db, 'settings', 'trader'),
-    (snap) => onData(snap.exists() ? (snap.data() as StoredSettings) : null),
-    onError,
-  );
+// 설정 화면이 쓰는 저장소 인터페이스입니다. 실제 앱은 Firestore를, 미리보기는 목업을 씁니다.
+export interface SettingsStore {
+  watch(
+    onData: (stored: StoredSettings | null) => void,
+    onError: (err: { code?: string }) => void,
+  ): () => void;
+  save(uid: string, expectedVersion: number, next: Settings): Promise<number>;
+}
+
+export function firestoreStore(db: Firestore): SettingsStore {
+  return {
+    watch(onData, onError) {
+      return onSnapshot(
+        doc(db, 'settings', 'trader'),
+        (snap) => onData(snap.exists() ? (snap.data() as StoredSettings) : null),
+        onError,
+      );
+    },
+    save: (uid, expectedVersion, next) => saveSettings(db, uid, expectedVersion, next),
+  };
 }
 
 // 현재 버전을 확인한 뒤 설정과 변경 이력을 한 번에 씁니다. 다른 곳에서 먼저 저장됐으면 ConflictError입니다.
-export async function saveSettings(
-  db: Firestore,
-  uid: string,
-  expectedVersion: number,
-  next: Settings,
-): Promise<number> {
+async function saveSettings(db: Firestore, uid: string, expectedVersion: number, next: Settings): Promise<number> {
   const ref = doc(db, 'settings', 'trader');
   const history = doc(collection(db, 'settings_history'));
   return runTransaction(db, async (tx) => {
@@ -57,6 +60,8 @@ export interface AppliedConfig {
   version: number | null; // null은 상태 파일에 설정 버전이 없는 경우(이전 버전 트레이더)
   updatedAt: string | null;
 }
+
+export type AppliedSource = () => Promise<AppliedConfig>;
 
 // 트레이더가 올린 상태 파일에서 지금 실행 중인 설정 버전을 읽습니다. 캐시를 쓰지 않습니다.
 export async function fetchAppliedConfig(url: string): Promise<AppliedConfig> {
