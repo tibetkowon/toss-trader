@@ -129,6 +129,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 
 	sessionDate := sessionStart.Format(dateLayout)
 	scfg := screenerConfig(market, commissionRate, os.Getenv)
+	effective := effectiveConfig(scfg, chaseLimitFromEnv(os.Getenv), pollIntervalDuration(), heartbeatIntervalDuration(), eodBuffer())
 	ev := screener.NewEvaluator(client, scfg, sessionStart)
 	if restored, skipped, err := restoreEvals(ctx, store, ev, sessionDate, market); err != nil {
 		log.Printf("저장된 평가 복구 실패(처음부터 평가합니다): %v", err)
@@ -158,7 +159,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	}
 
 	today := time.Now().Format(dateLayout)
-	cfg := simulator.Config{StopLossPct: 0.02, DailyLossLimitPct: 0.05, CommissionRate: commissionRate, Fractional: market == "US"}
+	cfg := simulator.Config{StopLossPct: stopLossPct, DailyLossLimitPct: dailyLossLimitPct, CommissionRate: commissionRate, Fractional: market == "US"}
 	// 미국 소수점 매수는 금액 지정 주문으로만 가능하고 정규장 종료 1시간 전까지만 접수됩니다(SPEC.md 7.4).
 	amountOrderCutoff := sessionEnd.Add(-time.Hour)
 
@@ -192,7 +193,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		return buildScreenerStatus(gate.Active(), gate.Rank, ev.Entries(), 30)
 	}
 	publish := func(halted bool, reason string) {
-		publishSnapshot(ctx, uploader, sim, client, halted, reason, recentOrders, screenerStatus(), currentSummary())
+		publishSnapshot(ctx, uploader, sim, client, halted, reason, recentOrders, screenerStatus(), currentSummary(), effective)
 	}
 	publish(false, "")
 
@@ -286,7 +287,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	}
 	publish(false, "")
 
-	if data, err := buildSnapshot(ctx, sim, client, false, "", recentOrders, screenerStatus(), eodSummary).RenderJSON(); err != nil {
+	if data, err := buildSnapshot(ctx, sim, client, false, "", recentOrders, screenerStatus(), eodSummary, effective).RenderJSON(); err != nil {
 		log.Printf("마감 히스토리 스냅샷 생성 실패: %v", err)
 	} else if err := uploader.Upload(ctx, historyObjectKey(today, market), "application/json", data); err != nil {
 		log.Printf("마감 히스토리 업로드 실패: %v", err)
@@ -382,14 +383,15 @@ func appendRecentOrder(orders []snapshot.Order, o snapshot.Order, max int) []sna
 // it — shared by publishSnapshot (live status.json/status.html) and the
 // EOD history archive (historyObjectKey) so both reflect the exact same
 // state.
-func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order, status *snapshot.ScreenerStatus, summary *snapshot.DaySummary) snapshot.Snapshot {
+func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order, status *snapshot.ScreenerStatus, summary *snapshot.DaySummary, effective *snapshot.EffectiveConfig) snapshot.Snapshot {
 	s := snapshot.Snapshot{
-		DailyLossLimitPct: 0.05,
+		DailyLossLimitPct: dailyLossLimitPct,
 		KillSwitch:        snapshot.KillSwitchStatus{Halted: halted, Reason: reason},
 		RecentOrders:      recentOrders,
 		UpdatedAt:         time.Now(),
 		Screener:          status,
 		Summary:           summary,
+		Config:            effective,
 	}
 	st := sim.State()
 	s.Seed = st.Seed // 당일 시작 시드 — DailyLossProgress의 분모(SPEC.md 4.3)
@@ -414,8 +416,8 @@ func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossap
 	return s
 }
 
-func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order, status *snapshot.ScreenerStatus, summary *snapshot.DaySummary) {
-	s := buildSnapshot(ctx, sim, client, halted, reason, recentOrders, status, summary)
+func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order, status *snapshot.ScreenerStatus, summary *snapshot.DaySummary, effective *snapshot.EffectiveConfig) {
+	s := buildSnapshot(ctx, sim, client, halted, reason, recentOrders, status, summary, effective)
 	data, err := s.RenderJSON()
 	if err != nil {
 		log.Printf("스냅샷 JSON 생성 실패: %v", err)
