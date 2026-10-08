@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"math"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -16,59 +15,6 @@ import (
 	"github.com/tibetkowon/toss-trader/internal/simulator"
 	"github.com/tibetkowon/toss-trader/internal/tossapi"
 )
-
-func envOf(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
-
-func TestScreenerConfigDefaultsAndOverrides(t *testing.T) {
-	def := screener.DefaultConfig("KR")
-	def.CommissionRate = 0.001
-	if got := screenerConfig("KR", 0.001, envOf(nil)); !reflect.DeepEqual(got, def) {
-		t.Fatalf("기본값: %+v, 기대: %+v", got, def)
-	}
-	got := screenerConfig("KR", 0.001, envOf(map[string]string{
-		"RANK_DEPTH": "40", "ACTIVE_COUNT": "8", "EVAL_PER_MIN": "0", "ACTIVE_KEEP_RANK": "20",
-		"NOISE_MIN": "3", "NOISE_MAX": "5.5", "RANK_START_DELAY_MINUTES": "10", "RANK_REFRESH_SECONDS": "30",
-		"LAZY_EXPAND": "false",
-	}))
-	if got.RankDepth != 40 || got.ActiveCount != 8 || got.EvalPerMin != 0 || got.KeepRank != 20 ||
-		math.Abs(got.NoiseMin-0.03) > 1e-12 || math.Abs(got.NoiseMax-0.055) > 1e-12 ||
-		got.StartDelay != 10*time.Minute || got.RefreshEvery != 30*time.Second || got.LazyExpand {
-		t.Errorf("덮어쓰기 결과: %+v", got)
-	}
-}
-
-func TestScreenerConfigRejectsBadValues(t *testing.T) {
-	def := screenerConfig("KR", 0, envOf(nil))
-	for name, env := range map[string]map[string]string{
-		"not a number":   {"RANK_DEPTH": "abc", "ACTIVE_COUNT": "x"},
-		"zero active":    {"ACTIVE_COUNT": "0"},
-		"negative depth": {"RANK_DEPTH": "-5"},
-		"inverted noise": {"NOISE_MIN": "6", "NOISE_MAX": "2"},
-		"negative delay": {"RANK_START_DELAY_MINUTES": "-1"},
-		"zero refresh":   {"RANK_REFRESH_SECONDS": "0"},
-	} {
-		if got := screenerConfig("KR", 0, envOf(env)); !reflect.DeepEqual(got, def) {
-			t.Errorf("%s: 잘못된 값이 기본값을 대체했습니다: %+v", name, got)
-		}
-	}
-}
-
-func TestChaseLimitFromEnv(t *testing.T) {
-	for _, tc := range []struct {
-		env  map[string]string
-		want float64
-	}{
-		{nil, 0.01},
-		{map[string]string{"CHASE_LIMIT_PCT": "2.5"}, 0.025},
-		{map[string]string{"CHASE_LIMIT_PCT": "0"}, 0},
-		{map[string]string{"CHASE_LIMIT_PCT": "-1"}, 0.01},
-		{map[string]string{"CHASE_LIMIT_PCT": "abc"}, 0.01},
-	} {
-		if got := chaseLimitFromEnv(envOf(tc.env)); math.Abs(got-tc.want) > 1e-12 {
-			t.Errorf("%v: %v, 기대: %v", tc.env, got, tc.want)
-		}
-	}
-}
 
 func TestPollSymbolsAlwaysIncludesHeld(t *testing.T) {
 	cases := []struct {
@@ -282,15 +228,5 @@ func TestPollPricesBatchErrorMarksOnlyThatBatch(t *testing.T) {
 		if (i >= tossapi.MaxPricesPerCall) != (o.Err != nil) {
 			t.Errorf("%s: err=%v", o.Symbol, o.Err)
 		}
-	}
-}
-
-func TestScreenerConfigDisablesAffordabilityRuleForFractionalUS(t *testing.T) {
-	none := func(string) string { return "" }
-	if screenerConfig("US", 0, none).MinAffordable != 0 {
-		t.Error("US는 소수점 매수라 살 수 있는 종목 보장 규칙을 꺼야 합니다")
-	}
-	if screenerConfig("KR", 0, none).MinAffordable == 0 {
-		t.Error("KR은 정수 주식이라 규칙을 유지해야 합니다")
 	}
 }

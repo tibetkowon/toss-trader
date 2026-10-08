@@ -15,6 +15,7 @@ import (
 	"github.com/tibetkowon/toss-trader/internal/report"
 	"github.com/tibetkowon/toss-trader/internal/screener"
 	"github.com/tibetkowon/toss-trader/internal/session"
+	"github.com/tibetkowon/toss-trader/internal/settings"
 	"github.com/tibetkowon/toss-trader/internal/simulator"
 	"github.com/tibetkowon/toss-trader/internal/snapshot"
 	"github.com/tibetkowon/toss-trader/internal/tossapi"
@@ -125,11 +126,15 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	if err != nil {
 		return err
 	}
-	eodCutoff := sessionEnd.Add(-eodBuffer())
 
 	sessionDate := sessionStart.Format(dateLayout)
-	scfg := screenerConfig(market, commissionRate, os.Getenv)
-	effective := effectiveConfig(scfg, chaseLimitFromEnv(os.Getenv), pollIntervalDuration(), heartbeatIntervalDuration(), eodBuffer())
+	applied, err := resolveSettings(ctx, store, settingsLoader(), sessionDate, market)
+	if err != nil {
+		return err
+	}
+	logSettings(applied)
+	eodCutoff := sessionEnd.Add(-applied.EODBuffer())
+	scfg := screenerConfigFrom(applied.Settings, market, commissionRate)
 	ev := screener.NewEvaluator(client, scfg, sessionStart)
 	if restored, skipped, err := restoreEvals(ctx, store, ev, sessionDate, market); err != nil {
 		log.Printf("저장된 평가 복구 실패(처음부터 평가합니다): %v", err)
@@ -142,8 +147,8 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		saveEval(e)
 	}
 	gate := screener.NewGate(scfg, client, ev, sessionStart)
-	chase := tradingloop.NewChaseGuard(chaseLimitFromEnv(os.Getenv))
-	log.Printf("스크리너 설정: %+v, 추격 상한 %.2f%%", scfg, chaseLimitFromEnv(os.Getenv)*100)
+	chase := tradingloop.NewChaseGuard(applied.ChaseLimitPct)
+	log.Printf("스크리너 설정: %+v, 추격 상한 %.2f%%", scfg, applied.ChaseLimitPct*100)
 
 	// 장 시작 전 대기 시간에 어제 랭킹 상위 종목을 미리 평가합니다(정규장 시작 30초 전까지).
 	res := gate.PreWarm(ctx, sessionStart.Add(-30*time.Second))
@@ -159,7 +164,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	}
 
 	today := time.Now().Format(dateLayout)
-	cfg := simulator.Config{StopLossPct: stopLossPct, DailyLossLimitPct: dailyLossLimitPct, CommissionRate: commissionRate, Fractional: market == "US"}
+	cfg := simulator.Config{StopLossPct: applied.StopLossPct, DailyLossLimitPct: applied.DailyLossLimitPct, CommissionRate: commissionRate, Fractional: market == "US"}
 	// 미국 소수점 매수는 금액 지정 주문으로만 가능하고 정규장 종료 1시간 전까지만 접수됩니다(SPEC.md 7.4).
 	amountOrderCutoff := sessionEnd.Add(-time.Hour)
 
@@ -193,13 +198,13 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		return buildScreenerStatus(gate.Active(), gate.Rank, ev.Entries(), 30)
 	}
 	publish := func(halted bool, reason string) {
-		publishSnapshot(ctx, uploader, sim, client, halted, reason, recentOrders, screenerStatus(), currentSummary(), effective)
+		publishSnapshot(ctx, uploader, sim, client, halted, reason, recentOrders, screenerStatus(), currentSummary(), applied.Document)
 	}
 	publish(false, "")
 
-	pollInterval := pollIntervalDuration()
+	pollInterval := applied.PollInterval()
 	const staleness = 30 * time.Second
-	heartbeatInterval := heartbeatIntervalDuration()
+	heartbeatInterval := applied.HeartbeatInterval()
 	lastHeartbeat := time.Now()
 	skips := newSkipTracker()
 	stale := newStaleTracker()
@@ -287,7 +292,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	}
 	publish(false, "")
 
-	if data, err := buildSnapshot(ctx, sim, client, false, "", recentOrders, screenerStatus(), eodSummary, effective).RenderJSON(); err != nil {
+	if data, err := buildSnapshot(ctx, sim, client, false, "", recentOrders, screenerStatus(), eodSummary, applied.Document).RenderJSON(); err != nil {
 		log.Printf("마감 히스토리 스냅샷 생성 실패: %v", err)
 	} else if err := uploader.Upload(ctx, historyObjectKey(today, market), "application/json", data); err != nil {
 		log.Printf("마감 히스토리 업로드 실패: %v", err)
@@ -383,15 +388,16 @@ func appendRecentOrder(orders []snapshot.Order, o snapshot.Order, max int) []sna
 // it — shared by publishSnapshot (live status.json/status.html) and the
 // EOD history archive (historyObjectKey) so both reflect the exact same
 // state.
-func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order, status *snapshot.ScreenerStatus, summary *snapshot.DaySummary, effective *snapshot.EffectiveConfig) snapshot.Snapshot {
+func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order, status *snapshot.ScreenerStatus, summary *snapshot.DaySummary, applied settings.Document) snapshot.Snapshot {
 	s := snapshot.Snapshot{
-		DailyLossLimitPct: dailyLossLimitPct,
+		DailyLossLimitPct: applied.DailyLossLimitPct,
 		KillSwitch:        snapshot.KillSwitchStatus{Halted: halted, Reason: reason},
 		RecentOrders:      recentOrders,
 		UpdatedAt:         time.Now(),
 		Screener:          status,
 		Summary:           summary,
-		Config:            effective,
+		Config:            &applied.Settings,
+		ConfigVersion:     applied.Version,
 	}
 	st := sim.State()
 	s.Seed = st.Seed // 당일 시작 시드 — DailyLossProgress의 분모(SPEC.md 4.3)
@@ -416,8 +422,8 @@ func buildSnapshot(ctx context.Context, sim *simulator.Simulator, client *tossap
 	return s
 }
 
-func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order, status *snapshot.ScreenerStatus, summary *snapshot.DaySummary, effective *snapshot.EffectiveConfig) {
-	s := buildSnapshot(ctx, sim, client, halted, reason, recentOrders, status, summary, effective)
+func publishSnapshot(ctx context.Context, uploader *snapshot.GCSUploader, sim *simulator.Simulator, client *tossapi.Client, halted bool, reason string, recentOrders []snapshot.Order, status *snapshot.ScreenerStatus, summary *snapshot.DaySummary, applied settings.Document) {
+	s := buildSnapshot(ctx, sim, client, halted, reason, recentOrders, status, summary, applied)
 	data, err := s.RenderJSON()
 	if err != nil {
 		log.Printf("스냅샷 JSON 생성 실패: %v", err)
@@ -482,31 +488,4 @@ func paperSeed() float64 {
 		}
 	}
 	return 100000 // SPEC.md 3.2/6.2의 초기 시드 가정 — 실계좌 입금 전까지 사용
-}
-
-func pollIntervalDuration() time.Duration {
-	if v := os.Getenv("POLL_INTERVAL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return time.Duration(n) * time.Second
-		}
-	}
-	return 4 * time.Second // SPEC.md 5.1의 3~5초 폴링 주기
-}
-
-func heartbeatIntervalDuration() time.Duration {
-	if v := os.Getenv("HEARTBEAT_INTERVAL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return time.Duration(n) * time.Second
-		}
-	}
-	return 60 * time.Second // SPEC.md 9의 주기적 하트비트 간격 — 실측 조정 예정(11절)
-}
-
-func eodBuffer() time.Duration {
-	if v := os.Getenv("EOD_BUFFER_MINUTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			return time.Duration(n) * time.Minute
-		}
-	}
-	return 15 * time.Minute // SPEC.md 3.1의 "장 마감 전(예: 15:10경)" 예시 근사
 }

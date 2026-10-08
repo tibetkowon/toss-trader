@@ -50,6 +50,16 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS session_settings (
+		trading_date TEXT NOT NULL,
+		market TEXT NOT NULL,
+		settings_json TEXT NOT NULL,
+		saved_at TEXT NOT NULL,
+		PRIMARY KEY (trading_date, market)
+	)`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
