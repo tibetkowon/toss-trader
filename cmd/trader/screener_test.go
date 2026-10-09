@@ -22,6 +22,7 @@ func envOf(m map[string]string) func(string) string { return func(k string) stri
 func TestScreenerConfigDefaultsAndOverrides(t *testing.T) {
 	def := screener.DefaultConfig("KR")
 	def.CommissionRate = 0.001
+	def.MinAffordable = def.ActiveCount
 	if got := screenerConfig("KR", 0.001, envOf(nil)); !reflect.DeepEqual(got, def) {
 		t.Fatalf("기본값: %+v, 기대: %+v", got, def)
 	}
@@ -30,10 +31,41 @@ func TestScreenerConfigDefaultsAndOverrides(t *testing.T) {
 		"NOISE_MIN": "3", "NOISE_MAX": "5.5", "RANK_START_DELAY_MINUTES": "10", "RANK_REFRESH_SECONDS": "30",
 		"LAZY_EXPAND": "false",
 	}))
-	if got.RankDepth != 40 || got.ActiveCount != 8 || got.EvalPerMin != 0 || got.KeepRank != 20 ||
+	if got.RankDepth != 40 || got.ActiveCount != 8 || got.MinAffordable != 8 || got.EvalPerMin != 0 || got.KeepRank != 20 ||
 		math.Abs(got.NoiseMin-0.03) > 1e-12 || math.Abs(got.NoiseMax-0.055) > 1e-12 ||
 		got.StartDelay != 10*time.Minute || got.RefreshEvery != 30*time.Second || got.LazyExpand {
 		t.Errorf("덮어쓰기 결과: %+v", got)
+	}
+}
+
+func TestScreenerConfigMinAffordable(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		market     string
+		env        map[string]string
+		wantActive int
+		wantMin    int
+	}{
+		{"KR 기본값", "KR", nil, 10, 10},
+		{"KR 활성 종목 수 변경", "KR", map[string]string{"ACTIVE_COUNT": "5"}, 5, 5},
+		{"KR 최소 개수 지정", "KR", map[string]string{"MIN_AFFORDABLE": "3"}, 10, 3},
+		{"KR 활성 종목 수와 최소 개수 지정", "KR", map[string]string{"ACTIVE_COUNT": "5", "MIN_AFFORDABLE": "3"}, 5, 3},
+		{"KR 규칙 끔", "KR", map[string]string{"MIN_AFFORDABLE": "0"}, 10, 0},
+		{"KR 잘못된 값", "KR", map[string]string{"ACTIVE_COUNT": "5", "MIN_AFFORDABLE": "abc"}, 5, 5},
+		{"KR 음수", "KR", map[string]string{"ACTIVE_COUNT": "5", "MIN_AFFORDABLE": "-1"}, 5, 5},
+		{"US 기본값", "US", nil, 10, 0},
+		{"US 활성 종목 수 변경", "US", map[string]string{"ACTIVE_COUNT": "5"}, 5, 0},
+		{"US 최소 개수 지정 무시", "US", map[string]string{"MIN_AFFORDABLE": "3"}, 10, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := screenerConfig(tc.market, 0, envOf(tc.env))
+			if got.ActiveCount != tc.wantActive {
+				t.Errorf("ActiveCount = %d, 기대: %d", got.ActiveCount, tc.wantActive)
+			}
+			if got.MinAffordable != tc.wantMin {
+				t.Errorf("MinAffordable = %d, 기대: %d", got.MinAffordable, tc.wantMin)
+			}
+		})
 	}
 }
 

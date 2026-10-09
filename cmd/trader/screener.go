@@ -55,6 +55,13 @@ func screenerConfig(market string, commissionRate float64, getenv func(string) s
 	if n, ok := envInt(getenv, "ACTIVE_COUNT", 1); ok {
 		c.ActiveCount = n
 	}
+	if market == "KR" {
+		// 국내는 소수점 매수가 없어 시드로 살 수 있는 종목부터 활성 집합을 채웁니다.
+		c.MinAffordable = c.ActiveCount
+		if n, ok := envInt(getenv, "MIN_AFFORDABLE", 0); ok {
+			c.MinAffordable = n
+		}
+	}
 	if n, ok := envInt(getenv, "EVAL_PER_MIN", 0); ok {
 		c.EvalPerMin = n
 	}
