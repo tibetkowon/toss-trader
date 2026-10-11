@@ -14,7 +14,7 @@ export function Frame({ email, onLogout, children }: Props) {
         <div className="brand">
           <img src={`${import.meta.env.BASE_URL}icon-192.png`} alt="" width={32} height={32} />
           <div className="brand-text">
-            <h1>트레이더 설정</h1>
+            <h1>트레이더 <span className="badge">모의</span></h1>
             {email && <p className="sub">{email}</p>}
           </div>
         </div>

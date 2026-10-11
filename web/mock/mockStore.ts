@@ -55,3 +55,24 @@ export function mockApplied(state: string): () => Promise<AppliedConfig> {
     return { version: 4, updatedAt: '2026-10-08T15:20:00+09:00' };
   };
 }
+
+export function mockSnapshot(state: string) {
+  return {
+    updated_at: new Date(Date.now() - (state === 'stale' ? 3_600_000 : 0)).toISOString(),
+    daily_pnl: -1250, seed: 100000, currency: 'KRW', fx_rate: 1380, daily_loss_limit_pct: 0.05,
+    kill_switch: { halted: state === 'halted', reason: state === 'halted' ? '일일 손실 한도 도달' : '' },
+    positions: state === 'empty' ? [] : [{ symbol: '005930', quantity: 1, unrealized_pnl: -1250 }],
+    recent_orders: state === 'empty' ? [] : [
+      { symbol: '005930', side: 'BUY', quantity: 1, price: 71000, status: 'Bought', created_at: new Date().toISOString() },
+      { symbol: 'AAPL', side: 'SELL', quantity: 0.3, price: 220, status: 'StoppedOut', created_at: new Date().toISOString() },
+      { symbol: 'TSLA', side: 'SELL', quantity: 0.2, price: 250, status: 'ClosedEndOfDay', created_at: new Date().toISOString() },
+      { symbol: '000660', side: 'BUY', quantity: 0, price: 200000, status: 'SkippedZeroShares', created_at: new Date().toISOString() },
+    ],
+    screener: {
+      active: state === 'empty' ? [] : [{ symbol: '005930', rank: 1, target: 71000, origin: 'ranking' }, { symbol: 'AAPL', rank: 2, target: 225, origin: 'watchlist' }],
+      rejections: state === 'empty' ? [] : [{ symbol: '000660', reason: '시드로 1주 매수 불가' }, { symbol: 'TSLA', reason: '노이즈 상한 초과' }],
+    },
+    summary: { account_equity_krw: 98750, day_pnl_krw: -1250, current_drawdown: 0.025, max_drawdown: 0.035 },
+    config: SAMPLE, config_version: 4, version: 'mock-a1b2c3d',
+  };
+}

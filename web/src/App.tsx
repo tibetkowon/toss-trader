@@ -2,13 +2,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut, type Auth, type User } from 'firebase/auth';
 import type { Firestore } from 'firebase/firestore';
 import { auth, configured, db } from './firebase';
-import { SettingsPage } from './SettingsPage';
+import { Dashboard } from './Dashboard';
+import { networkSource } from './dashboardData';
 import { Frame } from './Frame';
 import { Login } from './Login';
 import { fetchAppliedConfig, firestoreStore, type AppliedSource } from './data';
 
 const snapshotUrl = import.meta.env.VITE_SNAPSHOT_URL || undefined;
 const loadApplied: AppliedSource | undefined = snapshotUrl ? () => fetchAppliedConfig(snapshotUrl) : undefined;
+
+const source = snapshotUrl ? networkSource(snapshotUrl) : undefined;
 
 export function App() {
   if (!configured || !auth || !db) {
@@ -52,7 +55,7 @@ function Signed({ auth, db }: { auth: Auth; db: Firestore }) {
   }
   return (
     <Frame email={user.email} onLogout={() => signOut(auth)}>
-      <SettingsPage store={store} user={user} loadApplied={loadApplied} />
+      <Dashboard store={store} user={user} loadApplied={loadApplied} source={source} />
     </Frame>
   );
 }
