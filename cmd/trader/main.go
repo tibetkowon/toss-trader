@@ -143,6 +143,7 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 	}
 	gate := screener.NewGate(scfg, client, ev, sessionStart)
 	chase := tradingloop.NewChaseGuard(chaseLimitFromEnv(os.Getenv))
+	entryOpensAt := sessionStart.Add(entryDelayFromEnv(os.Getenv))
 	log.Printf("스크리너 설정: %+v, 추격 상한 %.2f%%", scfg, chaseLimitFromEnv(os.Getenv)*100)
 
 	// 장 시작 전 대기 시간에 어제 랭킹 상위 종목을 미리 평가합니다(정규장 시작 30초 전까지).
@@ -229,7 +230,12 @@ func runTradingSession(ctx context.Context, client *tossapi.Client, market strin
 		for _, symbol := range blocked {
 			log.Printf("추격 상한 초과로 오늘 진입에서 제외: %s (목표가 %.2f)", symbol, setups[symbol].TargetPrice)
 		}
-		actions := skips.filter(tradingloop.ProcessTick(sim, setups, observations, now, staleness), sim.Cash())
+		// 추격 상한은 개장 직후 첫 관측 기준이라 위에서 이미 적용했고, 진입 금지 시간에는 신규 진입만 막는다(보유 중 청산은 그대로).
+		tickSetups := setups
+		if held == "" && now.Before(entryOpensAt) {
+			tickSetups = map[string]simulator.Setup{}
+		}
+		actions := skips.filter(tradingloop.ProcessTick(sim, tickSetups, observations, now, staleness), sim.Cash())
 		if len(actions) > 0 {
 			fills += len(actions)
 			for _, action := range actions {

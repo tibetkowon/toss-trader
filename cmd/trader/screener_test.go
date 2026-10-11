@@ -326,3 +326,11 @@ func TestScreenerConfigDisablesAffordabilityRuleForFractionalUS(t *testing.T) {
 		t.Error("KR은 정수 주식이라 규칙을 유지해야 합니다")
 	}
 }
+
+func TestEntryDelayFromEnv(t *testing.T) {
+	for env, want := range map[string]time.Duration{"": 0, "30": 30 * time.Minute, "-5": 0, "abc": 0} {
+		if got := entryDelayFromEnv(envOf(map[string]string{"ENTRY_DELAY_MINUTES": env})); got != want {
+			t.Errorf("ENTRY_DELAY_MINUTES=%q: got %v, want %v", env, got, want)
+		}
+	}
+}

@@ -97,6 +97,12 @@ func chaseLimitFromEnv(getenv func(string) string) float64 {
 	return 0.01
 }
 
+// entryDelayFromEnv는 개장 후 신규 진입을 막는 시간입니다(SPEC 10절 A3). 기본 0은 기존 동작과 같습니다.
+func entryDelayFromEnv(getenv func(string) string) time.Duration {
+	n, _ := envInt(getenv, "ENTRY_DELAY_MINUTES", 0)
+	return time.Duration(n) * time.Minute
+}
+
 func pollSymbols(active []string, held string) []string {
 	if held == "" {
 		return active
