@@ -1,0 +1,95 @@
+rules_version = '2';
+
+// 설정 문서의 범위는 internal/settings(Go)와 web/src/limits.ts(웹)와 같은 값이어야 합니다.
+// 범위를 바꾸면 세 곳을 함께 고치고 SPEC.md 4.3을 먼저 개정하세요.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 관리자는 admins 컬렉션에 UID 이름의 문서가 있는 사람입니다. 추가는 콘솔에서만 합니다.
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function inRange(v, lo, hi) {
+      return v is number && v >= lo && v <= hi;
+    }
+
+    function isIntIn(v, lo, hi) {
+      return v is int && v >= lo && v <= hi;
+    }
+
+    function validSettings(d) {
+      return d.keys().hasOnly([
+          'stop_loss_pct', 'daily_loss_limit_pct', 'k', 'ma_window', 'noise_window',
+          'noise_min', 'noise_max', 'min_affordable', 'rank_depth', 'active_count',
+          'active_keep_rank', 'eval_per_min', 'lazy_expand', 'rank_start_delay_minutes',
+          'rank_refresh_seconds', 'chase_limit_pct', 'poll_interval_seconds',
+          'heartbeat_interval_seconds', 'eod_buffer_minutes',
+          'version', 'updated_at', 'updated_by'])
+        && d.keys().hasAll([
+          'stop_loss_pct', 'daily_loss_limit_pct', 'k', 'ma_window', 'noise_window',
+          'noise_min', 'noise_max', 'min_affordable', 'rank_depth', 'active_count',
+          'active_keep_rank', 'eval_per_min', 'lazy_expand', 'rank_start_delay_minutes',
+          'rank_refresh_seconds', 'chase_limit_pct', 'poll_interval_seconds',
+          'heartbeat_interval_seconds', 'eod_buffer_minutes',
+          'version', 'updated_at', 'updated_by'])
+        // 손절·일일 한도: 2% / 5%보다 느슨한 값은 SPEC 4.3에 따라 거부합니다.
+        && inRange(d.stop_loss_pct, 0.01, 0.02)
+        && inRange(d.daily_loss_limit_pct, 0.01, 0.05)
+        && inRange(d.k, 0.1, 1.0)
+        && isIntIn(d.ma_window, 2, 20)
+        && isIntIn(d.noise_window, 5, 60)
+        && inRange(d.noise_min, 0.005, 0.2)
+        && inRange(d.noise_max, 0.005, 0.2)
+        && d.noise_min < d.noise_max
+        && isIntIn(d.min_affordable, 0, 10)
+        && isIntIn(d.rank_depth, 1, 100)
+        && isIntIn(d.active_count, 1, 30)
+        && d.active_count <= d.rank_depth
+        && isIntIn(d.active_keep_rank, 0, 100)
+        && isIntIn(d.eval_per_min, 0, 60)
+        && d.lazy_expand is bool
+        && isIntIn(d.rank_start_delay_minutes, 0, 60)
+        && isIntIn(d.rank_refresh_seconds, 10, 600)
+        && inRange(d.chase_limit_pct, 0, 0.05)
+        && isIntIn(d.poll_interval_seconds, 2, 60)
+        && isIntIn(d.heartbeat_interval_seconds, 10, 600)
+        && isIntIn(d.eod_buffer_minutes, 0, 60)
+        && d.updated_by is string;
+    }
+
+    // 현재 설정 문서. 버전은 저장할 때마다 정확히 1씩 올라가야 합니다(동시 저장 충돌 방지).
+    match /settings/trader {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.version == 1
+        && request.resource.data.updated_at == request.time
+        && request.resource.data.updated_by == request.auth.uid
+        && validSettings(request.resource.data);
+      allow update: if isAdmin()
+        && request.resource.data.version == resource.data.version + 1
+        && request.resource.data.updated_at == request.time
+        && request.resource.data.updated_by == request.auth.uid
+        && validSettings(request.resource.data);
+      allow delete: if false;
+    }
+
+    // 변경 이력. 한 번 쓰면 고칠 수 없습니다.
+    match /settings_history/{entryId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.updated_at == request.time
+        && request.resource.data.updated_by == request.auth.uid
+        && validSettings(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // 관리자 목록. 본인 문서만 읽을 수 있고, 쓰기는 콘솔(관리 SDK)에서만 합니다.
+    match /admins/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+  }
+}
