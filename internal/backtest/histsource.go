@@ -26,9 +26,13 @@ type HistSource struct {
 // 수개월 × 분 단위 × 종목 100개 재생이 끝나지 않습니다.
 type symIndex struct {
 	dayT, minT []time.Time // data.Daily/Minutes와 같은 순서(최신순)
-	ascT       []time.Time // 정규장 분봉만, 시간 오름차순
-	cumAmt     []float64   // ascT 시점까지(그 봉 포함) 같은 날 정규장 누적 거래대금
-	cumVol     []float64
+	ascT       []time.Time // 정규장 분봉 시각만, 시간 오름차순(재생할 거래일 목록용)
+	// 랭킹용: 실제 Rankings(1d) 거래대금은 장전·정규장·장후(NXT 등) 봉을 모두 합한 당일 누적이다
+	// (2026-10-08 실측: 대형주 real/전체봉합 = 1.00, 정규장만이면 1.1~1.5). 현지 날짜별로 누적한다.
+	allT   []time.Time // 모든 분봉, 시간 오름차순
+	allAmt []float64   // 같은 현지 날짜 누적 거래대금(거래량 × 종가)
+	allVol []float64
+	allPx  []float64 // 봉 종가(현재가)
 }
 
 var _ screener.Source = (*HistSource)(nil)
@@ -78,22 +82,25 @@ func (h *HistSource) index(d SymbolData) *symIndex {
 	}
 	x.dayT, x.minT = parse(d.Daily), parse(d.Minutes)
 	number := func(s string) float64 { v, _ := strconv.ParseFloat(s, 64); return v }
+	for i := len(d.Minutes) - 1; i >= 0; i-- { // 오래된 것부터
+		if h.regular(x.minT[i]) {
+			x.ascT = append(x.ascT, x.minT[i])
+		}
+	}
 	var amt, vol float64
 	var day string
-	for i := len(d.Minutes) - 1; i >= 0; i-- { // 오래된 것부터
+	for i := len(d.Minutes) - 1; i >= 0; i-- {
 		t := x.minT[i]
-		if !h.regular(t) {
-			continue
-		}
 		if k := t.In(h.loc).Format("2006-01-02"); k != day {
 			day, amt, vol = k, 0, 0
 		}
-		v := number(d.Minutes[i].Volume)
+		v, px := number(d.Minutes[i].Volume), number(d.Minutes[i].ClosePrice)
 		vol += v
-		amt += v * number(d.Minutes[i].ClosePrice)
-		x.ascT = append(x.ascT, t)
-		x.cumAmt = append(x.cumAmt, amt)
-		x.cumVol = append(x.cumVol, vol)
+		amt += v * px
+		x.allT = append(x.allT, t)
+		x.allAmt = append(x.allAmt, amt)
+		x.allVol = append(x.allVol, vol)
+		x.allPx = append(x.allPx, px)
 	}
 	return x
 }
@@ -216,41 +223,33 @@ func (h *HistSource) Rankings(ctx context.Context, kind, duration, market string
 	if kind != "MARKET_TRADING_AMOUNT" || duration != "1d" || market != h.market {
 		return nil, fmt.Errorf("지원하지 않는 랭킹 요청")
 	}
-	open, _ := h.session(h.clock)
+	// 랭킹 하루의 시작: 국내 NXT 장전 08:00, 미국 확장시간 04:00(현지). 이전이면 직전 거래일 전체 합을 보인다.
+	dayStart := time.Date(h.clock.In(h.loc).Year(), h.clock.In(h.loc).Month(), h.clock.In(h.loc).Day(), 8, 0, 0, 0, h.loc)
+	if h.market == "US" {
+		dayStart = dayStart.Add(-4 * time.Hour)
+	}
 	type ranked struct {
 		item   tossapi.RankingItem
 		amount float64
 	}
 	var rows []ranked
-	number := func(s string) float64 { v, _ := strconv.ParseFloat(s, 64); return v }
 	for _, u := range h.universe {
-		minutes, _, err := h.Candles(ctx, u.Symbol, "1m", 1, "")
-		if err != nil {
-			return nil, err
+		x := h.idx[u.Symbol]
+		// clock 이전 마지막 봉(장전·장후 포함).
+		j := sort.Search(len(x.allT), func(i int) bool { return !x.allT[i].Before(h.clock) })
+		if j == 0 {
+			continue
+		}
+		k := j - 1
+		if !h.clock.Before(dayStart) && x.allT[k].Before(dayStart) {
+			continue // 오늘 거래가 아직 없음(실제 랭킹은 거래대금 0 종목을 싣지 않는다)
+		}
+		amount, volume := x.allAmt[k], x.allVol[k]
+		if amount <= 0 {
+			continue
 		}
 		item := tossapi.RankingItem{Symbol: u.Symbol, Currency: u.Currency}
-		if len(minutes) > 0 {
-			item.Price.LastPrice = minutes[0].ClosePrice
-		}
-		amount, volume := 0.0, 0.0
-		if h.clock.Before(open) {
-			daily, _, err := h.Candles(ctx, u.Symbol, "1d", 1, "")
-			if err != nil {
-				return nil, err
-			}
-			if len(daily) == 0 {
-				continue
-			}
-			b := daily[0]
-			volume = number(b.Volume)
-			amount = volume * (number(b.OpenPrice) + number(b.HighPrice) + number(b.LowPrice) + number(b.ClosePrice)) / 4
-		} else {
-			x := h.idx[u.Symbol]
-			// clock 이전 마지막 정규장 분봉의 당일 누적값. 오늘 봉이 없으면 0.
-			if j := sort.Search(len(x.ascT), func(i int) bool { return !x.ascT[i].Before(h.clock) }); j > 0 && !x.ascT[j-1].Before(open) {
-				amount, volume = x.cumAmt[j-1], x.cumVol[j-1]
-			}
-		}
+		item.Price.LastPrice = strconv.FormatFloat(x.allPx[k], 'f', -1, 64)
 		item.TradingAmount = strconv.FormatFloat(amount, 'f', -1, 64)
 		item.TradingVolume = strconv.FormatFloat(volume, 'f', -1, 64)
 		rows = append(rows, ranked{item, amount})

@@ -116,39 +116,48 @@ func TestCandlesPagination(t *testing.T) {
 	}
 }
 
-func TestRankingsPreOpenUsesPreviousDailyOnly(t *testing.T) {
+// 실제 Rankings(1d)의 거래대금은 장전·정규장·장후 봉을 모두 합한 당일 누적이다(2026-10-08 실측).
+// 테스트 데이터: 매일 08:59에 장전 봉(종가 1, 거래량 999999)과 09:00~09:02 정규장 봉 3개가 있다.
+func TestRankingsBeforePremarketShowPreviousDayTotal(t *testing.T) {
 	h := testSource(t)
-	// 10/7 장 시작 전: 전일(10/6) 일봉 거래량 2000 — 동률이면 순서가 유니버스 순서(안정 정렬)여야 한다.
-	h.SetClock(time.Date(2026, 10, 7, 8, 30, 0, 0, seoul))
+	h.SetClock(time.Date(2026, 10, 7, 7, 0, 0, 0, seoul)) // 08:00 이전 → 직전 거래일(10/6) 전체 합
 	r, err := h.Rankings(context.Background(), "MARKET_TRADING_AMOUNT", "1d", "KR")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r) != 2 || r[0].Rank != 1 || r[1].Rank != 2 {
-		t.Fatalf("랭킹 %+v", r)
-	}
-	if r[0].TradingVolume != "2000" {
-		t.Errorf("전일 거래량 2000이어야 함: %s (당일/미래 일봉 누출?)", r[0].TradingVolume)
+	// AAA: 장전 999999×1 + 100×(100+101+102) = 1030299, BBB: 999999×1 + 10×303 = 1003029
+	if len(r) != 2 || r[0].Symbol != "AAA" || r[0].TradingAmount != "1030299" || r[1].TradingAmount != "1003029" {
+		t.Fatalf("전일 합계: %+v", r)
 	}
 }
 
-func TestRankingsIntradayAccumulatesFromOpenToClock(t *testing.T) {
+func TestRankingsPremarketHasNoTradesYetIsEmpty(t *testing.T) {
+	h := testSource(t)
+	// 08:30: 장전 세션은 시작했지만 오늘 봉이 아직 없다 → 전일 값이 새면 안 되고, 거래대금 0 종목은 싣지 않는다.
+	h.SetClock(time.Date(2026, 10, 7, 8, 30, 0, 0, seoul))
+	r, _ := h.Rankings(context.Background(), "MARKET_TRADING_AMOUNT", "1d", "KR")
+	if len(r) != 0 {
+		t.Fatalf("오늘 거래 전에는 비어 있어야 함: %+v", r)
+	}
+}
+
+func TestRankingsIntradayAccumulatesAllSessionsFromDayStart(t *testing.T) {
 	h := testSource(t)
 	ctx := context.Background()
-	// 09:02: 09:00, 09:01 두 봉만 누적. AAA = 100*100 + 100*101 = 20100, BBB = 10*100 + 10*101 = 2010
+	// 09:02: 장전 봉 + 09:00, 09:01 봉. AAA = 999999 + 100×100 + 100×101 = 1020099, BBB = 999999 + 10×100 + 10×101 = 1002009
 	h.SetClock(time.Date(2026, 10, 7, 9, 2, 0, 0, seoul))
 	r, _ := h.Rankings(ctx, "MARKET_TRADING_AMOUNT", "1d", "KR")
-	if r[0].Symbol != "AAA" || r[0].TradingAmount != "20100" || r[1].TradingAmount != "2010" {
+	if r[0].Symbol != "AAA" || r[0].TradingAmount != "1020099" || r[1].TradingAmount != "1002009" {
 		t.Errorf("장중 누적 거래대금: %+v", r)
 	}
 	if r[0].Price.LastPrice != "101" {
-		t.Errorf("마지막 가격은 clock 이전 마지막 분봉 종가여야 함: %s", r[0].Price.LastPrice)
+		t.Errorf("현재가는 clock 이전 마지막 봉 종가여야 함: %s", r[0].Price.LastPrice)
 	}
-	// 장 시작 직후(09:00 정각)에는 아직 완성된 봉이 없으므로 누적 0이어야 한다(전날 값이 새면 안 됨).
+	// 09:00 정각: 아직 정규장 봉은 없고 장전 봉만 → 전날 값이 섞이지 않는다.
 	h.SetClock(time.Date(2026, 10, 7, 9, 0, 0, 0, seoul))
 	r, _ = h.Rankings(ctx, "MARKET_TRADING_AMOUNT", "1d", "KR")
-	if r[0].TradingAmount != "0" {
-		t.Errorf("개장 직후 누적은 0이어야 함: %s", r[0].TradingAmount)
+	if r[0].TradingAmount != "999999" {
+		t.Errorf("개장 직후엔 장전 누적만: %s", r[0].TradingAmount)
 	}
 }
 
