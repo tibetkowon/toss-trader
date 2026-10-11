@@ -1,6 +1,6 @@
 # 트레이더 설정 웹 (PWA)
 
-자동매매 설정을 휴대폰에서 바꾸는 화면입니다(SPEC.md 9.1·9.2). Vite + React + Firebase(Auth, Firestore)로 만들고, 빌드 결과물은 기존 GCS 버킷에 올립니다.
+자동매매 설정을 휴대폰에서 바꾸는 화면입니다(SPEC.md 9.1·9.2). Vite + React + Firebase(Auth, Firestore)로 만들고, 빌드 결과물은 Firebase Hosting에 올립니다.
 
 - 로그인한 관리자만 설정을 보고 바꿀 수 있습니다.
 - 손절·일일 한도는 SPEC 4.3 범위(1~2%, 1~5%)를 넘을 수 없습니다. 범위는 `src/limits.ts`, `internal/settings`, `firebase/firestore.rules`에 같은 값으로 있습니다.
@@ -15,7 +15,7 @@ npm install
 cp .env.example .env.local   # 값을 채웁니다(저장소에 올리지 마세요)
 npm run dev
 npm test                     # 범위·변환·변경 내역 단위 테스트
-npm run build                # VITE_BASE=/<bucket>/ 로 GCS 경로에 맞춥니다
+npm run build
 ```
 
 ## 환경변수 (빌드 시점)
@@ -27,7 +27,7 @@ npm run build                # VITE_BASE=/<bucket>/ 로 GCS 경로에 맞춥니�
 | `VITE_FIREBASE_PROJECT_ID` | Firebase 프로젝트 ID |
 | `VITE_FIREBASE_APP_ID` | Firebase 웹 앱 ID |
 | `VITE_SNAPSHOT_URL` | 상태 파일(`status.json`)의 전체 주소. 실행 중인 설정 버전을 비교합니다 |
-| `VITE_BASE` | 배포 경로. GCS 슬러그 경로면 `/<버킷>/`, 루트면 `/` |
+| `VITE_BASE` | 배포 경로. Hosting은 기본값 `/` 그대로 둡니다 |
 
 ## 배포 전 준비 (한 번만)
 
@@ -41,8 +41,8 @@ npm run build                # VITE_BASE=/<bucket>/ 로 GCS 경로에 맞춥니�
 
 ```bash
 cd web
-VITE_BASE=/<버킷>/ npm run build
-# dist/ 내용을 버킷에 올립니다. index.html과 sw.js는 캐시되지 않게 올리는 것을 권장합니다.
+npm run build
+firebase deploy --only hosting --project <프로젝트 ID>   # 저장소 루트에서 실행. index.html·sw.js 무캐시 헤더는 firebase.json에 있음
 ```
 
 `status.json`은 트레이더가 올리는 파일이며, 이 앱은 항상 네트워크에서 직접 읽습니다(`cache: 'no-store'`).

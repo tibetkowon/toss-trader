@@ -37,3 +37,6 @@ snapshots/
 .DS_Store
 .idea/
 .vscode/
+
+# Firebase CLI 캐시
+.firebase/

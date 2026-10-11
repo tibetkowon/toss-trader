@@ -1,0 +1,15 @@
+{
+  "firestore": {
+    "rules": "firebase/firestore.rules"
+  },
+  "hosting": {
+    "public": "web/dist",
+    "ignore": ["**/.*"],
+    "headers": [
+      {
+        "source": "{index.html,sw.js,registerSW.js,manifest.webmanifest}",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+      }
+    ]
+  }
+}

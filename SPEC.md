@@ -34,7 +34,7 @@
 - **DB(확정): SQLite**. 단일 인스턴스, 하루 2회 기동/정지 반복, 경량 데이터량이라는 조건에서 별도 DB 프로세스 운영 부담이 없는 SQLite가 가장 단순함. 2단계에서 자동 파라미터 튜닝 도입 후 데이터량·동시성이 늘어나면 Postgres 마이그레이션을 재검토
 - **API 인증정보 저장(확정): GCP Secret Manager**. `client_id`/`client_secret`을 인스턴스 디스크나 환경변수 파일에 평문으로 두지 않고 Secret Manager에 저장, 인스턴스에 연결된 서비스 계정에 `secretmanager.versions.access` 권한만 부여(해당 시크릿으로 스코프 제한 권장). 부팅 시 서버가 시작하면서 조회해 메모리에만 보관
 - **정적 대시보드 호스팅**: GCP Cloud Storage(정적 웹 호스팅) 버킷 — 9절 참고. 컴퓨트 인스턴스 전원 상태와 무관하게 항상 접근 가능해야 하므로 서버가 직접 서빙하지 않고 이쪽에 정적 페이지를 올리는 방식으로 확정
-- **웹 앱 백엔드(v16 확정): Firebase**. 기존 GCP 프로젝트에 연결된 Firebase 프로젝트를 사용합니다. Authentication(Google 로그인, 본인 계정만 허용), Firestore(설정·변경 이력·푸시 구독, 본인만 읽기·쓰기), FCM(웹 푸시). 정적 호스팅은 위 GCS를 그대로 유지하고 Firebase Hosting은 쓰지 않습니다(랜덤 슬러그 비공개 방식 유지)
+- **웹 앱 백엔드(v16 확정): Firebase**. 기존 GCP 프로젝트에 연결된 Firebase 프로젝트를 사용합니다. Authentication(Google 로그인, 본인 계정만 허용), Firestore(설정·변경 이력·푸시 구독, 본인만 읽기·쓰기), FCM(웹 푸시). 웹 앱은 Firebase Hosting(`micro-trading-495614.web.app`)에 배포합니다(2026-10-11 변경: GCS 호스트와 origin이 분리되고 로그인 승인 도메인이 이미 포함됨). 상태 스냅샷(`status.json`)은 기존 GCS 버킷이 계속 담당하며, 웹 앱이 읽을 수 있도록 버킷 CORS에 Hosting 도메인의 GET을 허용했습니다
 - **IP 허용목록(필수, 유동 IP 불가)**: 토스증권 API는 `POST /oauth2/token` 호출 시 발신 IP를 허용목록과 대조합니다. 미등록 IP는 403 `access_denied`로 거부됩니다. 허용목록 등록은 토스증권 WTS 웹 콘솔(Open API > 허용 IP 관리)에서 사람이 직접 등록하는 방식만 있고, 공식 OpenAPI 스펙에는 이를 프로그래매틱하게 갱신하는 엔드포인트가 없습니다. 즉 **유동 IP + 자동 재등록은 불가능**하며, GCP 인스턴스의 고정 IP를 사전 등록하는 것이 유일한 방법입니다.
 
 ### 2.1 운영 스케줄 (비용 절감, 확정)
@@ -294,7 +294,7 @@
 
 ### 9.1 웹 화면 (v16 확정)
 
-- **기술**: Vite + React + TypeScript + vite-plugin-pwa(manifest·서비스 워커 자동 생성). 빌드 결과물은 위 GCS 버킷(랜덤 슬러그 경로)에 업로드하며, Vite `base`를 해당 경로에 맞춥니다.
+- **기술**: Vite + React + TypeScript + vite-plugin-pwa(manifest·서비스 워커 자동 생성). 빌드 결과물은 Firebase Hosting에 배포합니다(저장소 루트 `firebase.json`, `firebase deploy --only hosting`).
 - **메뉴(하단 탭 5개)**
   - **홈**: 킬스위치 상태, 당일 손익과 일일 한도 진행률, 계좌 자산·낙폭, 보유 포지션, 마지막 갱신 시각
   - **거래**: 포지션 상세, 주문 내역(사유: 돌파 진입 / 손절 / 강제청산), 국장·미장 필터
