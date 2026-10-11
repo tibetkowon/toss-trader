@@ -318,3 +318,23 @@ func TestIntegerModeStillSkipsWhenOneShareUnaffordable(t *testing.T) {
 		t.Fatalf("정수 모드는 스킵해야 합니다: %+v", a)
 	}
 }
+
+func TestSlippageAndSellTaxReduceProceeds(t *testing.T) {
+	run := func(cfg Config) Action {
+		s := New(cfg, 1_000_000)
+		setup := Setup{Symbol: "X", TargetPrice: 100, TrendOK: true}
+		if a := s.OnTick(setup, 100, false); a.Type != Bought {
+			t.Fatalf("매수 실패: %+v", a)
+		}
+		return s.OnTick(setup, 100, true)
+	}
+	base := run(Config{StopLossPct: 0.02, DailyLossLimitPct: 0.05})
+	costly := run(Config{StopLossPct: 0.02, DailyLossLimitPct: 0.05, SlippageBps: 10, SellTaxRate: 0.002})
+	if base.PnL < -1e-6 || base.PnL > 1e-6 {
+		t.Errorf("비용 0이면 같은 가격 왕복 손익은 0이어야 함: %v", base.PnL)
+	}
+	// 편도 10bp×2 + 거래세 0.2% ≈ 0.4% of 1,000,000 = 약 4,000원 손실
+	if costly.PnL > -3900 || costly.PnL < -4100 {
+		t.Errorf("비용 반영 손익 %v, want 약 -4000", costly.PnL)
+	}
+}

@@ -20,6 +20,8 @@ import (
 type Config struct {
 	StopLossPct       float64 // e.g. 0.02 for -2% (SPEC.md 4.3)
 	DailyLossLimitPct float64 // e.g. 0.05 for 5% of seed (SPEC.md 4.3)
+	SellTaxRate       float64 // 매도 대금에만 적용; 0이면 기존 동작
+	SlippageBps       float64 // 편도 불리한 체결 보정; 0이면 기존 동작
 	CommissionRate    float64 // from tossapi.Commission.CommissionRate (SPEC.md 6.1)
 	// Fractional이면 매수 수량을 소수점 6자리까지 내림합니다(미국 금액 지정 주문, SPEC.md 7.4).
 	// 꺼져 있으면 정수 주수입니다(국내 종목).
@@ -266,6 +268,7 @@ func (s *Simulator) OnTick(setup Setup, price float64, isEndOfDay bool) Action {
 // openPosition sizes the buy as all available cash (SPEC.md 4.2: 균등분할 ÷
 // 최대동시보유(1) = 전액) and fills at the observed price plus commission.
 func (s *Simulator) openPosition(symbol string, price float64) Action {
+	price *= 1 + s.cfg.SlippageBps/1e4
 	shares := math.Floor(s.cash / (price * (1 + s.cfg.CommissionRate)))
 	if s.cfg.Fractional {
 		shares = math.Floor(s.cash/(price*(1+s.cfg.CommissionRate))*fractionalDecimals) / fractionalDecimals
@@ -283,9 +286,10 @@ func (s *Simulator) openPosition(symbol string, price float64) Action {
 
 func (s *Simulator) closePosition(symbol string, price float64, isStopLoss bool) Action {
 	pos := s.position
+	price *= 1 - s.cfg.SlippageBps/1e4
 	notional := price * pos.Shares
 	commission := notional * s.cfg.CommissionRate
-	proceeds := notional - commission
+	proceeds := notional - commission - notional*s.cfg.SellTaxRate
 	pnl := proceeds - pos.CostBasis
 
 	s.cash += proceeds

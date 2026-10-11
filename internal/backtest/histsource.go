@@ -263,3 +263,8 @@ func (h *HistSource) Rankings(ctx context.Context, kind, duration, market string
 	}
 	return out, nil
 }
+
+func parseNum(s string) float64 {
+	v, _ := strconv.ParseFloat(s, 64)
+	return v
+}

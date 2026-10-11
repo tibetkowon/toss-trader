@@ -34,6 +34,11 @@ type DayReport struct {
 
 // Report is the full multi-day backtest result.
 type Report struct {
+	Trades         []Trade
+	Stats          TradeStats
+	Benchmark      *Benchmark
+	Warnings       []string
+	Err            error
 	Days           []DayReport
 	StartingCash   float64
 	FinalEquity    float64
