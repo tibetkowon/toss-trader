@@ -40,3 +40,6 @@ snapshots/
 
 # Firebase CLI 캐시
 .firebase/
+
+# 백테스트 로컬 캐시
+.cache/
