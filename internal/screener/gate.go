@@ -33,6 +33,14 @@ func NewGate(cfg Config, src Source, ev *Evaluator, sessionStart time.Time) *Gat
 	return &Gate{cfg: cfg, src: src, ev: ev, sessionStart: sessionStart, now: time.Now, ranks: map[string]int{}}
 }
 
+// SetClock은 사전 평가의 시계를 주입합니다. nil은 실제 시계로 복구합니다.
+func (g *Gate) SetClock(now func() time.Time) {
+	if now == nil {
+		now = time.Now
+	}
+	g.now = now
+}
+
 func (g *Gate) SetSeed(seed float64) { g.cfg.Seed = seed }
 
 func (g *Gate) Evaluator() *Evaluator { return g.ev }

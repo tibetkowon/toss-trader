@@ -23,6 +23,15 @@ const dateLayout = "2006-01-02"
 
 func main() {
 	ctx := context.Background()
+	if len(os.Args) > 1 {
+		if os.Args[1] != "fetch" {
+			log.Fatal("사용법: backtest [fetch KR|US]")
+		}
+		if err := runFetch(ctx, os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	client, accountSeq := mustClient(ctx)
 

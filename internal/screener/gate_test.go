@@ -209,3 +209,27 @@ func TestRefreshMinAffordableUsesSeed(t *testing.T) {
 		t.Errorf("살 수 있는 종목이 최소 1개 포함되어야 합니다: %v", g.Active())
 	}
 }
+
+func TestGateSetClock(t *testing.T) {
+	f := gateFixture("A")
+	setRanking(f, "A")
+	g := newTestGate(f, nil)
+	realBefore := time.Now()
+	if g.now().Before(realBefore) {
+		t.Fatal("기본 시계가 time.Now가 아닙니다")
+	}
+	fixed := testSessionStart().Add(-time.Minute)
+	g.SetClock(func() time.Time { return fixed })
+	result := g.PreWarm(context.Background(), fixed.Add(time.Second))
+	if result.TimedOut || result.Evaluated != 1 {
+		t.Fatalf("주입된 시계: %+v", result)
+	}
+	g.SetClock(func() time.Time { return fixed.Add(time.Hour) })
+	if r := g.PreWarm(context.Background(), fixed); !r.TimedOut {
+		t.Fatal("마감 시각을 무시했습니다")
+	}
+	g.SetClock(nil)
+	if g.now().Before(realBefore) {
+		t.Fatal("실제 시계 복구 실패")
+	}
+}
