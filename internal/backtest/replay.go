@@ -24,6 +24,14 @@ type ReplayConfig struct {
 	CommissionRate, SellTaxRate, SlippageBps float64
 	ChaseLimitPct                            float64
 	Screener                                 func(*screener.Config)
+
+	// 실험 변수(0이면 끔, 라이브와 동일).
+	EntryDelayMin int     // 정규장 시작 후 이 시간(분) 동안 신규 진입 금지
+	StopNoiseMult float64 // 손절폭 = StopNoiseMult × 종목의 20일 평균 노이즈, [StopMinPct, StopMaxPct]로 제한
+	StopMinPct    float64
+	StopMaxPct    float64
+	TrailActivate float64 // 진입가 대비 이만큼 오르면 트레일링 시작(0이면 끔)
+	TrailGap      float64 // 시작 후 고점 대비 이만큼 내려오면 청산
 }
 
 func DefaultReplayConfig() ReplayConfig {
@@ -41,10 +49,13 @@ func (c ReplayConfig) validate() error {
 	if c.From != "" && c.To != "" && c.From > c.To {
 		return fmt.Errorf("from은 to보다 늦을 수 없습니다")
 	}
-	for _, v := range []float64{c.Seed, c.FXRate, c.StopLossPct, c.DailyLossLimitPct, c.CommissionRate, c.SellTaxRate, c.SlippageBps, c.ChaseLimitPct} {
+	for _, v := range []float64{c.Seed, c.FXRate, c.StopLossPct, c.DailyLossLimitPct, c.CommissionRate, c.SellTaxRate, c.SlippageBps, c.ChaseLimitPct, c.StopNoiseMult, c.StopMinPct, c.StopMaxPct, c.TrailActivate, c.TrailGap} {
 		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
 			return fmt.Errorf("설정은 유한한 음이 아닌 수여야 합니다")
 		}
+	}
+	if c.EntryDelayMin < 0 || (c.StopNoiseMult > 0 && (c.StopMinPct <= 0 || c.StopMaxPct < c.StopMinPct || c.StopMaxPct >= 1)) {
+		return fmt.Errorf("실험 변수 범위 오류")
 	}
 	if c.Seed == 0 || c.FXRate == 0 || c.StopLossPct >= 1 || c.DailyLossLimitPct >= 1 || c.CommissionRate+c.SellTaxRate >= 1 || c.SlippageBps >= 10000 {
 		return fmt.Errorf("시드·환율·위험·비용 설정 범위 오류")
@@ -77,20 +88,7 @@ func Replay(cfg ReplayConfig, src *HistSource) Report {
 		cash /= cfg.FXRate
 	}
 	r.StartingCash, r.FinalEquity = cash, cash
-	dates := map[string]bool{}
-	for _, x := range src.idx {
-		for _, t := range x.ascT {
-			d := t.In(src.loc).Format("2006-01-02")
-			if (cfg.From == "" || d >= cfg.From) && (cfg.To == "" || d <= cfg.To) {
-				dates[d] = true
-			}
-		}
-	}
-	var days []string
-	for d := range dates {
-		days = append(days, d)
-	}
-	sort.Strings(days)
+	days := src.TradingDays(cfg.From, cfg.To)
 	if len(days) == 0 {
 		r.Err = fmt.Errorf("요청 구간에 정규장 분봉이 없습니다")
 		return r
@@ -135,6 +133,19 @@ func Replay(cfg ReplayConfig, src *HistSource) Report {
 		simcfg := simulator.Config{StopLossPct: cfg.StopLossPct, DailyLossLimitPct: cfg.DailyLossLimitPct, CommissionRate: cfg.CommissionRate, SlippageBps: cfg.SlippageBps, Fractional: src.market == "US"}
 		sim := simulator.New(simcfg, cash)
 		chase := tradingloop.NewChaseGuard(cfg.ChaseLimitPct)
+		stopFor := func(symbol string) float64 {
+			if cfg.StopNoiseMult <= 0 {
+				return cfg.StopLossPct
+			}
+			e, ok := ev.Cached(symbol)
+			if !ok {
+				return cfg.StopLossPct
+			}
+			return math.Min(cfg.StopMaxPct, math.Max(cfg.StopMinPct, cfg.StopNoiseMult*e.NoiseRatio))
+		}
+		peak := 0.0 // 보유 중 고점(트레일링용)
+		blocked := map[string]bool{}
+		forced := ""
 		dr := DayReport{Date: date, StartCash: cash}
 		last := map[string]float64{}
 		var entry Trade
@@ -148,6 +159,9 @@ func Replay(cfg ReplayConfig, src *HistSource) Report {
 			}
 			if a.Type == simulator.StoppedOut || a.Type == simulator.ClosedEndOfDay {
 				entry.ExitTime, entry.ExitPrice, entry.Reason, entry.PnL = now, a.Price, a.Type.String(), a.PnL
+				if forced != "" {
+					entry.Reason = forced
+				}
 				r.Trades = append(r.Trades, entry)
 			}
 		}
@@ -205,6 +219,27 @@ func Replay(cfg ReplayConfig, src *HistSource) Report {
 					if !holding && src.market == "US" && !now.Before(end.Add(-time.Hour)) {
 						continue
 					}
+					if !holding && now.Before(start.Add(time.Duration(cfg.EntryDelayMin)*time.Minute)) {
+						continue
+					}
+					if !holding {
+						peak = 0
+						if blocked[symbol] {
+							continue // 트레일링으로 청산한 종목은 당일 재진입 금지(SPEC 3.1과 같은 취급)
+						}
+					} else if symbol == pos.Symbol && cfg.TrailActivate > 0 {
+						// 트레일링: 이번 단계 가격으로 고점을 갱신하고, 활성화 후 고점 대비 TrailGap 내려오면 청산한다.
+						// 갭으로 그 밑에서 열리면 시가로 청산한다. 사유는 손절·마감과 구분해 기록한다.
+						peak = math.Max(peak, price)
+						level := peak * (1 - cfg.TrailGap)
+						if peak >= pos.EntryPrice*(1+cfg.TrailActivate) && price <= level {
+							forced = "TrailingStop"
+							record(sim.OnTick(setups[symbol], math.Min(level, prices[0]), true))
+							forced = ""
+							blocked[symbol] = true
+							continue
+						}
+					}
 					obs := []tradingloop.PriceObservation{{Symbol: symbol, Price: price, Timestamp: now}}
 					obs, _ = chase.Filter(obs, setups, holding, now, 30*time.Second)
 					if len(obs) == 0 {
@@ -220,9 +255,10 @@ func Replay(cfg ReplayConfig, src *HistSource) Report {
 						if src.market == "KR" && !src.isETF(symbol) {
 							simcfg.SellTaxRate = cfg.SellTaxRate
 						}
+						simcfg.StopLossPct = stopFor(symbol)
 						sim = simulator.Restore(simcfg, sim.State())
 					}
-					obs[0].Price = fillObservation(setup, pos, holding, price, prices[0], cfg.StopLossPct)
+					obs[0].Price = fillObservation(setup, pos, holding, price, prices[0], stopFor(symbol))
 					for _, a := range tradingloop.ProcessTick(sim, setups, obs, now, 30*time.Second) {
 						record(a)
 					}
@@ -318,4 +354,23 @@ func (h *HistSource) isETF(symbol string) bool {
 		}
 	}
 	return false
+}
+
+// TradingDays는 [from, to] 안에서 정규장 분봉이 있는 날짜를 오름차순으로 돌려줍니다(빈 문자열은 제한 없음).
+func (h *HistSource) TradingDays(from, to string) []string {
+	dates := map[string]bool{}
+	for _, x := range h.idx {
+		for _, t := range x.ascT {
+			d := t.In(h.loc).Format("2006-01-02")
+			if (from == "" || d >= from) && (to == "" || d <= to) {
+				dates[d] = true
+			}
+		}
+	}
+	days := make([]string, 0, len(dates))
+	for d := range dates {
+		days = append(days, d)
+	}
+	sort.Strings(days)
+	return days
 }

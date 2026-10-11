@@ -24,6 +24,12 @@ const dateLayout = "2006-01-02"
 func main() {
 	ctx := context.Background()
 	if len(os.Args) > 1 {
+		if os.Args[1] == "exp" {
+			if err := runExperiments(os.Args[2:], os.Stdout); err != nil {
+				log.Fatal(err)
+			}
+			return
+		}
 		if os.Args[1] == "run" {
 			if err := runReplay(os.Args[2:], os.Stdout); err != nil {
 				log.Fatal(err)

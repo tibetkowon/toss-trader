@@ -159,3 +159,48 @@ func TestSummarizeTrades(t *testing.T) {
 		t.Error("빈 목록")
 	}
 }
+
+func TestReplayEntryDelayPostponesEntry(t *testing.T) {
+	// 09:11 돌파 후 가격이 목표가 위(103)에 머문다. 15분 진입 금지면 09:15 이후에야 진입한다.
+	m := map[int]ohlc{11: {101, 103, 101, 103}}
+	for i := 12; i < 390; i++ {
+		m[i] = ohlc{103, 103, 103, 103}
+	}
+	r := runReplayWith(t, replayCache(t, m), func(c *ReplayConfig) { c.EntryDelayMin = 15 })
+	if len(r.Trades) != 1 {
+		t.Fatalf("거래 %d건: %+v", len(r.Trades), r.Trades)
+	}
+	if got := r.Trades[0].EntryTime.In(seoul).Format("15:04"); got != "09:15" {
+		t.Errorf("진입 시각 %s, want 09:15", got)
+	}
+}
+
+func TestReplayTrailingStopExitsAndBlocksReentry(t *testing.T) {
+	m := map[int]ohlc{11: {101, 103, 101, 103}, 12: {103, 106, 103, 106}, 13: {106, 106, 104.5, 105}}
+	for i := 14; i < 390; i++ {
+		m[i] = ohlc{105, 105, 105, 105} // 목표가 위로 다시 올라와도 재진입하면 안 된다
+	}
+	r := runReplayWith(t, replayCache(t, m), func(c *ReplayConfig) { c.TrailActivate, c.TrailGap = 0.02, 0.01 })
+	if len(r.Trades) != 1 || r.Trades[0].Reason != "TrailingStop" {
+		t.Fatalf("트레일링 청산 1건 기대: %+v", r.Trades)
+	}
+	// 고점 106, 갭 1% → 104.94. 시가 106이 그 위이므로 레벨에서 체결된다.
+	if px := r.Trades[0].ExitPrice; px < 104.9 || px > 105 {
+		t.Errorf("트레일링 청산가 %v, want 약 104.94", px)
+	}
+}
+
+func TestReplayNoiseScaledStopIsTighterThanFixed(t *testing.T) {
+	// 진입가 102에서 저가 100.5: 고정 2%(99.96)에는 안 닿지만, 노이즈 4%×0.25=1%(100.98)에는 닿는다.
+	m := map[int]ohlc{11: {101, 103, 101, 103}, 12: {102, 102, 100.5, 101}}
+	base := runReplayWith(t, replayCache(t, m), nil)
+	for _, tr := range base.Trades {
+		if tr.Reason == "StoppedOut" {
+			t.Fatalf("고정 2%%에서는 손절되면 안 됨: %+v", tr)
+		}
+	}
+	r := runReplayWith(t, replayCache(t, m), func(c *ReplayConfig) { c.StopNoiseMult, c.StopMinPct, c.StopMaxPct = 0.25, 0.01, 0.02 })
+	if len(r.Trades) != 1 || r.Trades[0].Reason != "StoppedOut" || r.Trades[0].ExitPrice < 100.9 || r.Trades[0].ExitPrice > 101.0 {
+		t.Fatalf("노이즈 비례 손절 기대: %+v", r.Trades)
+	}
+}
