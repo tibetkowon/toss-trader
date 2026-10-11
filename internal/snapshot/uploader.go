@@ -19,7 +19,7 @@ type Uploader interface {
 	Upload(ctx context.Context, object, contentType string, data []byte) error
 }
 
-// GCSUploader는 메타데이터 서버 인증과 GCS JSON API만 사용합니다.
+// GCSUploader는 메타데이터 서버 인증과 GCS XML API(PUT)만 사용합니다.
 // SDK나 서비스 계정 키 파일을 사용하지 않습니다.
 type GCSUploader struct {
 	http        *http.Client
@@ -44,7 +44,7 @@ func NewGCSUploader(client *http.Client, bucket string) *GCSUploader {
 		http:        &c,
 		bucket:      bucket,
 		metadataURL: "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
-		gcsURL:      "https://storage.googleapis.com/upload/storage/v1",
+		gcsURL:      "https://storage.googleapis.com",
 		sleep:       sleepContext,
 	}
 }
@@ -93,14 +93,21 @@ func (u *GCSUploader) uploadOnce(ctx context.Context, object, contentType string
 	if err != nil {
 		return err
 	}
-	query := url.Values{"uploadType": {"media"}, "name": {object}}
-	endpoint := u.gcsURL + "/b/" + url.PathEscape(u.bucket) + "/o?" + query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	// JSON 업로드 API(uploadType=media)는 Cache-Control을 지정할 수 없어 객체가 기본값
+	// public,max-age=3600으로 엣지에 1시간 캐시된다(대시보드가 최대 1시간 묵음). XML PUT은 같은
+	// 권한(create+delete)으로 헤더를 실어 보낼 수 있다.
+	segments := strings.Split(object, "/")
+	for i, seg := range segments {
+		segments[i] = url.PathEscape(seg)
+	}
+	endpoint := u.gcsURL + "/" + url.PathEscape(u.bucket) + "/" + strings.Join(segments, "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return errors.New("GCS 업로드 요청 생성 실패")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Cache-Control", "no-cache, max-age=0")
 	resp, err := u.http.Do(req)
 	if err != nil {
 		return requestError(ctx, "GCS 업로드 호출 실패")

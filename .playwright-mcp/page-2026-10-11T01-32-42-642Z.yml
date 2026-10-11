@@ -1,0 +1,10 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - heading "트레이더 모의" [level=1] [ref=e7]:
+      - text: 트레이더
+      - generic [ref=e8]: 모의
+  - main [ref=e9]:
+    - generic [ref=e10]:
+      - heading "관리자 로그인" [level=2] [ref=e11]
+      - paragraph [ref=e12]: 등록된 관리자 계정으로 로그인하면 자동매매 설정을 볼 수 있습니다.
+      - button "Google 계정으로 로그인" [ref=e13] [cursor=pointer]

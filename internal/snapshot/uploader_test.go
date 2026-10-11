@@ -54,12 +54,11 @@ func TestGCSUploader(t *testing.T) {
 			payload := []byte("<html>거래 상태</html>")
 			gcs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
-				if r.Method != http.MethodPost || r.URL.Path != "/b/test-bucket/o" {
-					t.Errorf("업로드 요청: %s %s", r.Method, r.URL.Path)
+				if r.Method != http.MethodPut || r.URL.Path != "/test-bucket/"+object || r.URL.RawQuery != "" {
+					t.Errorf("업로드 요청: %s %s ?%s", r.Method, r.URL.Path, r.URL.RawQuery)
 				}
-				q := r.URL.Query()
-				if len(q) != 2 || q.Get("uploadType") != "media" || q.Get("name") != object {
-					t.Errorf("업로드 쿼리: %v", q)
+				if r.Header.Get("Cache-Control") != "no-cache, max-age=0" {
+					t.Errorf("Cache-Control = %q (엣지 캐시 방지 필요)", r.Header.Get("Cache-Control"))
 				}
 				if r.Header.Get("Authorization") != "Bearer tok-1" || r.Header.Get("Content-Type") != "text/html; charset=utf-8" {
 					t.Error("업로드 요청 헤더 오류")
