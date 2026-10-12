@@ -11,7 +11,7 @@ import (
 	"github.com/tibetkowon/toss-trader/internal/tossapi"
 )
 
-func runFetch(ctx context.Context, args []string) error {
+func runFetch(ctx context.Context, args []string, refresh bool) error {
 	log.Print("VM이 켜져 있으면 토큰 재발급으로 VM 토큰이 무효화됩니다")
 	if len(args) != 1 || (args[0] != "KR" && args[0] != "US") {
 		return fmt.Errorf("사용법: go run ./cmd/backtest fetch KR|US")
@@ -34,6 +34,9 @@ func runFetch(ctx context.Context, args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if refresh {
+		return backtest.Refresh(ctx, client, backtest.Cache{}, args[0], pages, log.Printf)
 	}
 	return backtest.Fetch(ctx, client, backtest.Cache{}, args[0], pages, log.Printf)
 }

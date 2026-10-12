@@ -36,10 +36,10 @@ func main() {
 			}
 			return
 		}
-		if os.Args[1] != "fetch" {
-			log.Fatal("사용법: backtest fetch KR|US 또는 run KR|US [from=YYYY-MM-DD] [to=YYYY-MM-DD]")
+		if os.Args[1] != "fetch" && os.Args[1] != "refresh" {
+			log.Fatal("사용법: backtest fetch|refresh KR|US 또는 run KR|US [from=YYYY-MM-DD] [to=YYYY-MM-DD]")
 		}
-		if err := runFetch(ctx, os.Args[2:]); err != nil {
+		if err := runFetch(ctx, os.Args[2:], os.Args[1] == "refresh"); err != nil {
 			log.Fatal(err)
 		}
 		return
